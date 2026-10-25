@@ -102,6 +102,14 @@ describe('CappedLog', () => {
     expect(output.slice(4)).toEqual([expect.stringContaining('Omitted 1 lines'), 'kept\n', 'exit code 5\n']);
   });
 
+  it('bounds the kept tail by bytes as well as lines', () => {
+    const output: string[] = [];
+    const log = new CappedLog((text) => output.push(text), 0, 200, 10);
+    for (let index = 0; index < 5; index += 1) log.push(`line ${index}\n`);
+    log.end();
+    expect(output.slice(1)).toEqual([expect.stringContaining('Omitted 4 lines'), 'line 4\n']);
+  });
+
   it('defaults to a 64 MB limit', () => {
     let bytes = 0;
     let notices = 0;

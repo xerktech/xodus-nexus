@@ -50,7 +50,7 @@ export class GameLogReducer {
   constructor(
     private readonly write: (line: string) => void,
     private readonly verbose = false,
-    private readonly now: () => number = Date.now,
+    private readonly now: () => number = () => performance.now(),
   ) {
     this.overflow.lastReportAt = now();
   }
@@ -109,18 +109,20 @@ export class GameLogReducer {
 }
 
 // Backstop against any spam source the reducer does not recognise: past
-// maxBytes the file keeps only the last tailLines lines, written on end(), so
-// the exit code and final summaries still reach it.
+// maxBytes the file keeps only the last tailLines lines (and at most
+// maxTailBytes), written on end(), so the exit code still reaches it.
 export class CappedLog {
   private written = 0;
   private omitted = 0;
   private capped = false;
   private readonly tail: string[] = [];
+  private tailBytes = 0;
 
   constructor(
     private readonly write: (text: string) => void,
     private readonly maxBytes = MAX_LOG_BYTES,
     private readonly tailLines = 200,
+    private readonly maxTailBytes = 1024 * 1024,
   ) {}
 
   push(text: string): void {
@@ -134,8 +136,9 @@ export class CappedLog {
       this.write(`Log size limit of ${Math.round(this.maxBytes / 1024 / 1024)} MB reached; only the last ${this.tailLines} lines of further output will be written when the game exits. Enable verbose logs in Settings or set XODUS_NEXUS_VERBOSE_LOGS=1 for full output.\n`);
     }
     this.tail.push(text);
-    if (this.tail.length > this.tailLines) {
-      this.tail.shift();
+    this.tailBytes += Buffer.byteLength(text);
+    while (this.tail.length > this.tailLines || (this.tail.length > 1 && this.tailBytes > this.maxTailBytes)) {
+      this.tailBytes -= Buffer.byteLength(this.tail.shift()!);
       this.omitted += 1;
     }
   }
@@ -145,5 +148,6 @@ export class CappedLog {
     this.write(`Omitted ${this.omitted} lines over the log size limit; the last ${this.tail.length} follow.\n`);
     for (const text of this.tail.splice(0)) this.write(text);
     this.omitted = 0;
+    this.tailBytes = 0;
   }
 }

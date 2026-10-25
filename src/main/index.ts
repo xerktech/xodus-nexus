@@ -940,6 +940,9 @@ async function prepareGameLaunch(id: string): Promise<void> {
     gameOperation.phase = 'Xodus is running; waiting for the game window…';
     emitSnapshot();
     void tracked.result.then((result) => {
+      // Flush first so per-signature summaries cannot push the exit line out
+      // of the capped log's tail.
+      gameLog.flush();
       addGameLog(`The Xodus process exited with code ${result.code}.`);
       if (!gameOperation || gameOperation.id !== operationId) return;
       gameOperation.finishedAt = new Date().toISOString();
@@ -953,6 +956,7 @@ async function prepareGameLaunch(id: string): Promise<void> {
         gameOperation.phase = gameOperation.error;
       }
     }).catch((error) => {
+      gameLog.flush();
       addGameLog(`Process error: ${(error as Error).message}`);
       if (!gameOperation || gameOperation.id !== operationId) return;
       gameOperation.status = 'failed';
