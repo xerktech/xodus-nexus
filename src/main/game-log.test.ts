@@ -1,7 +1,9 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CappedLog, GameLogReducer, gameLoggingEnvironment, gameWindowEnvironment } from './game-log.js';
 
 describe('GameLogReducer', () => {
+  afterEach(() => { vi.restoreAllMocks(); });
+
   it('coalesces interleaved verbose lines with changing Wine addresses', () => {
     const output: string[] = [];
     let time = 0;
@@ -78,6 +80,19 @@ describe('GameLogReducer', () => {
     expect(output.filter((line) => line === '0124:fixme:hot:repeat stub')).toHaveLength(2);
   });
 
+  it('evicts by monotonic time, so a wall-clock step back does not stall eviction', () => {
+    const output: string[] = [];
+    let monotonic = 0;
+    vi.spyOn(performance, 'now').mockImplementation(() => monotonic);
+    vi.spyOn(Date, 'now').mockReturnValue(0);
+    const reducer = new GameLogReducer((line) => output.push(line));
+    for (let index = 0; index < 512; index += 1) reducer.push(`0124:fixme:seh:asset ${index}`);
+    monotonic = 11_000;
+    vi.spyOn(Date, 'now').mockReturnValue(-3_600_000);
+    for (let index = 0; index < 10; index += 1) reducer.push(`0124:fixme:seh:late ${index}`);
+    expect(output.slice(512)).toEqual(Array.from({ length: 10 }, (_, index) => `0124:fixme:seh:late ${index}`));
+  });
+
   it('keeps full output in explicit verbose mode', () => {
     const output: string[] = [];
     const reducer = new GameLogReducer((line) => output.push(line), true);
@@ -104,10 +119,13 @@ describe('CappedLog', () => {
 
   it('bounds the kept tail by bytes as well as lines', () => {
     const output: string[] = [];
-    const log = new CappedLog((text) => output.push(text), 0, 200, 10);
-    for (let index = 0; index < 5; index += 1) log.push(`line ${index}\n`);
+    const log = new CappedLog((text) => output.push(text), 0, 200, 21);
+    for (let round = 0; round < 2; round += 1) {
+      for (let index = 0; index < 5; index += 1) log.push(`line ${index}\n`);
+    }
     log.end();
-    expect(output.slice(1)).toEqual([expect.stringContaining('Omitted 4 lines'), 'line 4\n']);
+    // Each line is 7 bytes, so three fit in the 21-byte budget.
+    expect(output.slice(1)).toEqual([expect.stringContaining('Omitted 7 lines'), 'line 2\n', 'line 3\n', 'line 4\n']);
   });
 
   it('defaults to a 64 MB limit', () => {
