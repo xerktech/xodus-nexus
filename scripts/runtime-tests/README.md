@@ -30,7 +30,11 @@ The runtime does not provide a unique platform device identifier.
   without premature provider cleanup (58 checks).
 - `async-completion-lifetime-probe.c`: 400 completions with block deletion,
   result consumption and block reuse, plus a completion canceled by queue
-  termination that must still reach the title's callback (2,813 checks). Callback changes for a
+  termination that must still reach the title's callback. Termination waits
+  for outstanding operations: work scheduled or run before Terminate, calls
+  still in flight, and thread-pool calls racing Terminate(wait) all call back
+  before the queue reports termination; a terminated queue starts none
+  (5,859 checks). Callback changes for a
   reused block are made **before** Begin, matching the native snapshot contract.
 - `async-schedule-probe.c`: uninitialized/null/detached scheduling, valid provider
   work, terminal-state rejection and original failure preservation (16 checks).

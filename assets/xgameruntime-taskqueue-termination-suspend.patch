@@ -1,0 +1,150 @@
+--- a/dlls/xgameruntime/xthreading.c
++++ b/dlls/xgameruntime/xthreading.c
+@@ -110,6 +110,8 @@ struct XTaskQueueObject
+     LONG terminated;
+     CRITICAL_SECTION cs;
+     LONG pending;
++    LONG suspended;
++    BOOL completion_closed;
+     HANDLE cancel_event;
+     HANDLE finished_event;
+     struct task_context *termination_entry;
+@@ -272,6 +274,29 @@ static inline struct async_state *async_state( XAsyncBlock *asyncBlock )
+     return (struct async_state *)asyncBlock->internal[0];
+ }
+ 
++static void queue_maybe_finish( XTaskQueueHandle queue );
++
++/* Like native XTaskQueueSuspendTermination, each XAsync operation defers its
++ * queue's termination until it has signaled completion. A terminated queue
++ * starts no new operations. */
++static HRESULT queue_suspend_termination( XTaskQueueHandle queue )
++{
++    HRESULT hr = S_OK;
++    EnterCriticalSection( &queue->cs );
++    if (queue->terminated) hr = E_ABORT;
++    else ++queue->suspended;
++    LeaveCriticalSection( &queue->cs );
++    return hr;
++}
++
++static void queue_resume_termination( XTaskQueueHandle queue )
++{
++    EnterCriticalSection( &queue->cs );
++    --queue->suspended;
++    LeaveCriticalSection( &queue->cs );
++    queue_maybe_finish( queue );
++}
++
+ /* Like the native GDK and mixutin's queue-lifetime fix, Begin owns a queue
+  * reference until provider cleanup and the completion callback both finish. */
+ static void async_release_queue( struct async_state *state )
+@@ -436,8 +461,14 @@ static HRESULT WINAPI x_threading_XAsyncBegin( IXThreadingImpl *iface, XAsyncBlo
+         IUnknown_AddRef( &queue->IUnknown_iface );
+         IXThreadingImpl_XTaskQueueCloseHandle( iface, queue );
+     }
++    if (FAILED(hr = queue_suspend_termination( queue )))
++    {
++        IUnknown_Release( &queue->IUnknown_iface );
++        return hr;
++    }
+     if (!(state = calloc( 1, sizeof(*state) )))
+     {
++        queue_resume_termination( queue );
+         IUnknown_Release( &queue->IUnknown_iface );
+         return E_OUTOFMEMORY;
+     }
+@@ -445,6 +476,7 @@ static HRESULT WINAPI x_threading_XAsyncBegin( IXThreadingImpl *iface, XAsyncBlo
+     {
+         hr = HRESULT_FROM_WIN32( GetLastError() );
+         free( state );
++        queue_resume_termination( queue );
+         IUnknown_Release( &queue->IUnknown_iface );
+         return hr;
+     }
+@@ -522,6 +554,23 @@ static HRESULT WINAPI x_threading_XAsyncSchedule( IXThreadingImpl *iface, XAsync
+     return hr;
+ }
+ 
++/* Signal waiters, then release the operation's termination suspension. Keep
++ * the queue alive for that even if this drops the state's queue reference. */
++static void async_finish_completion( struct async_state *state, BOOL cleanup )
++{
++    XTaskQueueHandle queue = state->provider_block.queue;
++    IUnknown_AddRef( &queue->IUnknown_iface );
++    EnterCriticalSection( &state->cs );
++    state->completion_thread = 0;
++    state->completion_finished = TRUE;
++    LeaveCriticalSection( &state->cs );
++    SetEvent( state->provider_block.internal[3] );
++    if (cleanup) async_cleanup_state( state, state->provider );
++    async_release_queue( state );
++    queue_resume_termination( queue );
++    IUnknown_Release( &queue->IUnknown_iface );
++}
++
+ static void CALLBACK async_completion_callback( struct async_state *state, BOOLEAN canceled )
+ {
+     if (canceled) async_invoke_provider( state, XAsyncOp_Cancel );
+@@ -531,18 +580,11 @@ static void CALLBACK async_completion_callback( struct async_state *state, BOOLE
+     /* Native XAsync lets canceled completions through as well, so titles can
+      * release per-call data they own when their queue is terminated. */
+     state->callback( state->user_block );
+-    EnterCriticalSection( &state->cs );
+-    state->completion_thread = 0;
+-    state->completion_finished = TRUE;
+-    LeaveCriticalSection( &state->cs );
+-    SetEvent( state->provider_block.internal[3] );
+     /* The application may delete or reuse XAsyncBlock inside its completion
+      * callback. Only the runtime-owned state may be touched after it returns.
+      * GetResult may already have cleaned the provider; cleaned makes this
+      * idempotent without dereferencing the caller's freed block. */
+-    if (canceled || FAILED(state->status) || !state->data.bufferSize)
+-        async_cleanup_state( state, state->provider );
+-    async_release_queue( state );
++    async_finish_completion( state, canceled || FAILED(state->status) || !state->data.bufferSize );
+ }
+ 
+ static void WINAPI x_threading_XAsyncComplete( IXThreadingImpl *iface, XAsyncBlock *asyncBlock, HRESULT result, SIZE_T requiredBufferSize )
+@@ -560,15 +602,12 @@ static void WINAPI x_threading_XAsyncComplete( IXThreadingImpl *iface, XAsyncBlo
+     state->data.bufferSize = SUCCEEDED(result) ? requiredBufferSize : 0;
+     state->status = result;
+     LeaveCriticalSection( &state->cs );
++    /* The operation's suspension keeps a terminating queue's completion port
++     * open, so the callback still runs there, as canceled. */
+     if (state->callback &&
+         SUCCEEDED(IXThreadingImpl_XTaskQueueSubmitCallback( iface, state->provider_block.queue, XTaskQueuePort_Completion, state, (XTaskQueueCallback *)async_completion_callback )))
+         return;
+-    EnterCriticalSection( &state->cs );
+-    state->completion_finished = TRUE;
+-    LeaveCriticalSection( &state->cs );
+-    SetEvent( state->provider_block.internal[3] );
+-    if (FAILED(result) || !requiredBufferSize) async_cleanup_state( state, state->provider );
+-    async_release_queue( state );
++    async_finish_completion( state, FAILED(result) || !requiredBufferSize );
+ }
+ 
+ static HRESULT WINAPI x_threading_XAsyncGetResult( IXThreadingImpl *iface, XAsyncBlock *asyncBlock, const void *identity, SIZE_T bufferSize, void *buffer, SIZE_T *bufferUsed )
+@@ -673,8 +712,10 @@ static void queue_maybe_finish( XTaskQueueHandle queue )
+ {
+     struct task_context *entry = NULL;
+     EnterCriticalSection( &queue->cs );
+-    if (queue->terminated && !queue->pending && queue->termination_entry)
++    if (queue->terminated && !queue->pending && !queue->suspended && queue->termination_entry)
+     {
++        /* Nothing may be dispatched after the termination notification. */
++        queue->completion_closed = TRUE;
+         entry = queue->termination_entry;
+         queue->termination_entry = NULL;
+     }
+@@ -1064,7 +1105,9 @@ static HRESULT WINAPI x_threading_XTaskQueueSubmitDelayedCallback( IXThreadingIm
+     entry->callbackContext = context;
+     entry->due = GetTickCount64() + delayMs;
+     EnterCriticalSection( &queue->cs );
+-    if (queue->terminated)
++    /* As on the GDK, a terminating queue rejects new work, but its completion
++     * port runs callbacks as canceled until outstanding operations finish. */
++    if (queue->terminated && (kind == XTaskQueuePort_Work || queue->completion_closed))
+     {
+         LeaveCriticalSection( &queue->cs );
+         free( entry );
