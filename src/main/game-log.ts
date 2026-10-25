@@ -9,7 +9,10 @@ interface RepeatedLine {
 }
 
 function verboseSignature(line: string): { key: string; label: string } | null {
-  const match = line.match(/(?:^|:)(fixme|info|trace):([^:]+):(.+)$/i);
+  // Match the level only in Wine's prefix position ([time:]pid:[tid:]level:channel:;
+  // the time is space-padded and ids are %04x, so they can be longer than 4 digits),
+  // so err:/warn: lines whose message text contains ":fixme:" are never reduced.
+  const match = line.match(/^\s*(?:[\d.]+:)?(?:[0-9a-f]{4,8}:){0,2}(fixme|info|trace):([^:]+):(.+)$/i);
   if (!match) return null;
   const detail = match[3].replace(/\b(?:0x)?[0-9a-f]{8,}\b/gi, '<address>');
   const key = `${match[1].toLowerCase()}:${match[2].toLowerCase()}:${detail}`;

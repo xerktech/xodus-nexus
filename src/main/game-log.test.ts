@@ -23,6 +23,29 @@ describe('GameLogReducer', () => {
     expect(output.join('\n')).toContain('Suppressed 998 repeated fixme:vkd3d-proton');
   });
 
+  it('never reduces err: lines whose text contains a verbose level', () => {
+    const output: string[] = [];
+    const reducer = new GameLogReducer((line) => output.push(line), false, () => 0);
+    const lines = ['0124:err:ntdll:thing failed:trace:x:y', '0124:err:d3d:fixme:shader:compile failed',
+      '65874.496:00dc:01f4:warn:d3d:info:x:y'];
+    for (let index = 0; index < 10; index += 1) lines.forEach((line) => reducer.push(line));
+    reducer.flush();
+    expect(output).toHaveLength(30);
+    expect(output.some((line) => line.includes('Suppressed'))).toBe(false);
+  });
+
+  it('reduces verbose lines with or without a Wine pid/tid prefix', () => {
+    const output: string[] = [];
+    const reducer = new GameLogReducer((line) => output.push(line), false, () => 0);
+    for (let index = 0; index < 10; index += 1) {
+      reducer.push('fixme:vkd3d-proton:func: repeated');
+      reducer.push('0124:trace:seh:dispatch repeated');
+      reducer.push('  1.234:00dc:01f4:fixme:d3d:padded time');
+      reducer.push('0124:1a2b4:info:vkd3d-proton:long tid');
+    }
+    expect(output).toHaveLength(8);
+  });
+
   it('keeps full output in explicit verbose mode', () => {
     const output: string[] = [];
     const reducer = new GameLogReducer((line) => output.push(line), true);
