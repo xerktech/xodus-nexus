@@ -1,5 +1,6 @@
 const REPORT_INTERVAL_MS = 10_000;
 const MAX_SIGNATURES = 512;
+const MAX_LOG_BYTES = 64 * 1024 * 1024;
 
 interface RepeatedLine {
   label: string;
@@ -53,15 +54,16 @@ export class GameLogReducer {
       this.write(line);
       return;
     }
+    // Map insertion order doubles as recency order: re-inserting a seen
+    // signature moves it to the end, so the first entry is the coldest one.
     let entry = this.repeated.get(signature.key);
-    if (!entry) {
-      if (this.repeated.size >= MAX_SIGNATURES) {
-        this.write(line);
-        return;
-      }
+    if (entry) {
+      this.repeated.delete(signature.key);
+    } else {
+      if (this.repeated.size >= MAX_SIGNATURES) this.evictColdest();
       entry = { label: signature.label, seen: 0, suppressed: 0, lastReportAt: this.now() };
-      this.repeated.set(signature.key, entry);
     }
+    this.repeated.set(signature.key, entry);
     entry.seen += 1;
     if (entry.seen <= 2) {
       this.write(line);
@@ -75,10 +77,33 @@ export class GameLogReducer {
     for (const entry of this.repeated.values()) this.report(entry);
   }
 
+  private evictColdest(): void {
+    const [key, entry] = this.repeated.entries().next().value!;
+    this.report(entry);
+    this.repeated.delete(key);
+  }
+
   private report(entry: RepeatedLine): void {
     if (entry.suppressed === 0) return;
     this.write(`Suppressed ${entry.suppressed} repeated ${entry.label} diagnostic lines. Enable verbose logs in Settings or set XODUS_NEXUS_VERBOSE_LOGS=1 for full output.`);
     entry.suppressed = 0;
     entry.lastReportAt = this.now();
   }
+}
+
+// Backstop against any spam source the reducer does not recognise: stop
+// writing the file once it reaches maxBytes, leaving one final notice.
+export function cappedLogWriter(write: (text: string) => void, maxBytes = MAX_LOG_BYTES): (text: string) => void {
+  let written = 0;
+  let capped = false;
+  return (text) => {
+    if (capped) return;
+    written += Buffer.byteLength(text);
+    if (written <= maxBytes) {
+      write(text);
+      return;
+    }
+    capped = true;
+    write(`Log size limit of ${Math.round(maxBytes / 1024 / 1024)} MB reached; further game output is not written to this file. Enable verbose logs in Settings or set XODUS_NEXUS_VERBOSE_LOGS=1 for full output.\n`);
+  };
 }

@@ -18,7 +18,7 @@ import { RuntimeManager } from './runtime.js';
 import { prepareProtonRunner, syncPrefixUserLocale, syncUnrealCultureGameIni } from './proton.js';
 import { CatalogService } from './catalog.js';
 import { cloudSaveRuntime, selectedWinePath, startXodusService, storeContentRuntime, unbridgedCloudSaveRuntime, type XodusServiceSession } from './xodus-service.js';
-import { GameLogReducer, gameLoggingEnvironment, gameWindowEnvironment } from './game-log.js';
+import { GameLogReducer, cappedLogWriter, gameLoggingEnvironment, gameWindowEnvironment } from './game-log.js';
 import { downloadVerifiedVcRedist, installedVcRuntimeVersion, VC_REDIST_VERSION, versionAtLeast } from './vc-runtime.js';
 import { assertGameRemovalAvailable, validateGameDeleteTarget } from './game-removal.js';
 import { deleteGameDirectory } from './game-delete.js';
@@ -852,7 +852,10 @@ async function prepareGameLaunch(id: string): Promise<void> {
   await fs.mkdir(logDirectory, { recursive: true });
   const launchLog = createWriteStream(logPath, { flags: 'w', encoding: 'utf8' });
   launchLog.on('error', (error) => console.error(`Unable to write launch log ${logPath}:`, error));
-  const writeLaunchLog = (line: string) => launchLog.write(`[${new Date().toISOString()}] ${line}\n`);
+  const verboseLogs = process.env.XODUS_NEXUS_VERBOSE_LOGS === '1' || store.settings.verboseLogs;
+  // Verbose mode promises full output, so only the default mode is capped.
+  const writeLaunchFile = cappedLogWriter((text) => launchLog.write(text), verboseLogs ? Infinity : undefined);
+  const writeLaunchLog = (line: string) => writeLaunchFile(`[${new Date().toISOString()}] ${line}\n`);
   gameOperation = {
     id: operationId,
     gameId: id,
@@ -872,7 +875,6 @@ async function prepareGameLaunch(id: string): Promise<void> {
     gameOperation.phase = line.length > 180 ? `${line.slice(0, 177)}…` : line;
     scheduleSnapshot();
   };
-  const verboseLogs = process.env.XODUS_NEXUS_VERBOSE_LOGS === '1' || store.settings.verboseLogs;
   const gameLog = new GameLogReducer(appendGameLog, verboseLogs);
   const addGameLog = (line: string) => gameLog.push(line);
   writeLaunchLog(`Game: ${game.title}`);
