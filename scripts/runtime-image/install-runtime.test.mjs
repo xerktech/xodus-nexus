@@ -107,6 +107,31 @@ test('sweeps only old staging and replaces an unmarked partial release', () => {
   assert.equal(fs.existsSync(path.join(root, 'releases/xodus-nexus-runtime-a/xodus-nexus-runtime-a')), false);
 });
 
+test('concurrent runs replace a leftover unmarked release once', async () => {
+  const tmp = scratch();
+  const root = path.join(tmp, 'runtimes');
+  runtime(path.join(root, 'releases'), 'xodus-nexus-runtime-a');
+  const source = runtime(path.join(tmp, 'src'), 'xodus-nexus-runtime-a');
+  const run = promisify(execFile);
+  await Promise.all(Array.from({ length: 8 }, () => run('sh', [script], { env: env(source, root) })));
+  assert.deepEqual(fs.readdirSync(path.join(root, 'releases/xodus-nexus-runtime-a')).sort(), ['.direwolf-runtime-image', 'files']);
+  assert.equal(current(root).name, 'xodus-nexus-runtime-a');
+  assert.deepEqual(fs.readdirSync(root).filter(entry => entry.startsWith('.')), []);
+});
+
+test('fails when the release cannot be published', { skip: process.getuid?.() === 0 }, () => {
+  const tmp = scratch();
+  const root = path.join(tmp, 'runtimes');
+  fs.mkdirSync(path.join(root, 'releases'), { recursive: true });
+  fs.chmodSync(path.join(root, 'releases'), 0o555);
+  try {
+    assert.throws(() => install(runtime(path.join(tmp, 'src'), 'xodus-nexus-runtime-a'), root));
+    assert.equal(fs.existsSync(path.join(root, 'current.json')), false);
+  } finally {
+    fs.chmodSync(path.join(root, 'releases'), 0o755);
+  }
+});
+
 test('refuses an image without exactly one plainly named runtime', () => {
   const tmp = scratch();
   const root = path.join(tmp, 'runtimes');

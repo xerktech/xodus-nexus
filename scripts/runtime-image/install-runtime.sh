@@ -8,7 +8,8 @@
 # Copies only when the release is missing; a re-run with the same image is a no-op.
 # On a switch, releases this script installed earlier are pruned, except the one
 # current.json named until now (a running session may still read it); upstream
-# installs are never touched.
+# installs are never touched unless one has this image's exact name (then it is
+# replaced like any unmarked leftover).
 #
 # No lock: several sessions may start at once, and a run may be killed at any
 # point. Each run copies into its own staging directory and publishes with one
@@ -56,22 +57,33 @@ if [ ! -f "$release/$marker" ]; then
   { tar -C "$src_root" -cf - "$name" || echo failed >"$staging/.read-failed"; } | tar -C "$staging" -xf -
   [ ! -e "$staging/.read-failed" ] || fail "could not read all of $name"
   : >"$staging/$name/$marker"
-  # A release without the marker is debris (an older, interrupted install):
-  # releases are only ever published whole, with the marker, by the rename below.
-  if [ -e "$release" ] && [ ! -f "$release/$marker" ]; then
-    rm -rf "$release" 2>/dev/null || true
-  fi
-  # Renaming into releases/ fails, rather than nesting, when another run
-  # published the same release first; then that one is used.
-  if ! mv "$staging/$name" "$root/releases/" 2>/dev/null; then
-    [ -f "$release/$marker" ] || fail "could not install $name"
-  fi
+  # Renaming into releases/ fails, rather than nesting, when the target exists.
+  # A marked target was published whole by another run: use it. An unmarked one
+  # is a leftover: move it aside with one rename, which only one of several
+  # concurrent runs wins, and delete it privately (concurrent rm -rf of one tree
+  # leaves a skeleton in busybox), then try again.
+  attempts=0
+  until mv "$staging/$name" "$root/releases/" 2>/dev/null; do
+    [ ! -f "$release/$marker" ] || break
+    attempts=$((attempts + 1))
+    [ "$attempts" -le 5 ] || fail "could not install $name"
+    aside=$(mktemp -d "$root/.staging-image-XXXXXX")
+    mv "$release" "$aside/" 2>/dev/null || true
+    # Another run may have published between the check and the rename: put a
+    # whole release back (a rename keeps files a session has open) and use it.
+    if [ -f "$aside/$name/$marker" ] && mv "$aside/$name" "$root/releases/" 2>/dev/null; then
+      rm -rf "$aside"
+      break
+    fi
+    rm -rf "$aside"
+  done
 fi
 
 previous=$(sed -n 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$root/current.json" 2>/dev/null | head -n 1 || true)
 if [ "$previous" != "$name" ]; then
   # Written whole, then renamed over, as Nexus writes it (mode 0600).
-  pointer=$(mktemp "$root/.current.json.XXXXXX")
+  # Named like staging, so a run killed before the rename leaves nothing the sweep misses.
+  pointer=$(mktemp "$root/.staging-image-XXXXXX")
   printf '{\n  "name": "%s",\n  "winePath": "%s",\n  "commit": "%s",\n  "installedAt": "%s"\n}\n' \
     "$name" "$release/files/bin/wine" "$name" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$pointer"
   mv "$pointer" "$root/current.json"
