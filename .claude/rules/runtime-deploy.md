@@ -17,7 +17,12 @@ paths:
   runtime.yml on `main` forces one.
 - `ARGOCD_PUSH_TOKEN` (a PAT with write access to xerktech/ArgoCD) lives in the main-only
   `argocd-deploy` environment, never as a repo secret.
-- The image must stay public: the streaming namespace has no GHCR pull secret.
-- `install-runtime.sh` runs as uid 1000 (the shared home's owner) in busybox: POSIX sh only, no
-  `-x` checks on the source tree, and it prunes only releases it installed (marker file).
-  Tests: `scripts/runtime-image/install-runtime.test.mjs`.
+- The image must be public: the streaming namespace has no GHCR pull secret.
+  - A new GHCR package starts private whatever the repo's visibility; it was made public by hand
+    once, in the package settings, before ArgoCD first pinned it.
+- `install-runtime.sh` runs as uid 1000 (the shared home's owner) in busybox; CI tests it with dash.
+  - POSIX sh only: no pipefail (check each pipe side), no flock (busybox has none; it uses a
+    mkdir lock broken after 30 min), no `-x` checks on the source tree.
+  - It prunes only releases it installed (marker file), only when switching, and keeps the
+    release `current.json` named until then: a running session may still read it.
+  - Tests: `scripts/runtime-image/install-runtime.test.mjs`.

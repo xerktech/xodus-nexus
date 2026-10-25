@@ -11,7 +11,9 @@ permissions:
 
 concurrency:
   group: runtime-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  # Never cancel a main build: a later push that changes no runtime input would
+  # otherwise drop a verified runtime before it is deployed.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   changes:
@@ -271,6 +273,7 @@ jobs:
           mkdir -p scripts/runtime-image/runtime
           tar -xJf "candidate/$NEXUS_NAME-x86_64.tar.xz" -C scripts/runtime-image/runtime
           test -f "scripts/runtime-image/runtime/$NEXUS_NAME/files/bin/wine"
+      - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -320,12 +323,15 @@ jobs:
           cd gitops
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # The guard matches exactly the lines sed rewrites, so a line sed would skip
+          # (a trailing comment, quotes) fails here instead of reading as pinned.
+          line="^([[:space:]]*image: )${IMAGE}([:@][^[:space:]]*)?[[:space:]]*\$"
           for attempt in 1 2 3 4 5; do
-            if ! grep -qE "^[[:space:]]*image: ${IMAGE}[:@]" "$MANIFEST"; then
-              echo "::error::$MANIFEST has no 'image: $IMAGE' line to update." >&2
+            if ! grep -qE "$line" "$MANIFEST"; then
+              echo "::error::$MANIFEST has no plain 'image: $IMAGE...' line to update (no quotes or trailing comment)." >&2
               exit 1
             fi
-            sed -i -E "s#^([[:space:]]*image: )${IMAGE}([:@][^[:space:]]*)?[[:space:]]*\$#\1${REF}#" "$MANIFEST"
+            sed -i -E "s#${line}#\1${REF}#" "$MANIFEST"
             if git diff --quiet; then
               echo "ArgoCD already pins $REF"
               exit 0
