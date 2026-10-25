@@ -7,6 +7,7 @@ interface RepeatedLine {
   seen: number;
   suppressed: number;
   lastReportAt: number;
+  lastSeenAt: number;
 }
 
 function verboseSignature(line: string): { key: string; label: string } | null {
@@ -41,12 +42,18 @@ export function gameWindowEnvironment(source: NodeJS.ProcessEnv): NodeJS.Process
 
 export class GameLogReducer {
   private readonly repeated = new Map<string, RepeatedLine>();
+  // Shared slot for signatures that arrive while every slot was used within
+  // the last report interval, so a working set larger than the map still
+  // collapses instead of thrashing through eviction.
+  private readonly overflow: RepeatedLine = { label: `diagnostics beyond ${MAX_SIGNATURES} distinct signatures`, seen: 0, suppressed: 0, lastReportAt: 0, lastSeenAt: 0 };
 
   constructor(
     private readonly write: (line: string) => void,
     private readonly verbose = false,
     private readonly now: () => number = Date.now,
-  ) {}
+  ) {
+    this.overflow.lastReportAt = now();
+  }
 
   push(line: string): void {
     const signature = this.verbose ? null : verboseSignature(line);
@@ -59,12 +66,24 @@ export class GameLogReducer {
     let entry = this.repeated.get(signature.key);
     if (entry) {
       this.repeated.delete(signature.key);
+    } else if (this.repeated.size < MAX_SIGNATURES || this.evictStale()) {
+      entry = { label: signature.label, seen: 0, suppressed: 0, lastReportAt: this.now(), lastSeenAt: 0 };
     } else {
-      if (this.repeated.size >= MAX_SIGNATURES) this.evictColdest();
-      entry = { label: signature.label, seen: 0, suppressed: 0, lastReportAt: this.now() };
+      this.count(this.overflow, line);
+      return;
     }
     this.repeated.set(signature.key, entry);
+    this.count(entry, line);
+  }
+
+  flush(): void {
+    for (const entry of this.repeated.values()) this.report(entry);
+    this.report(this.overflow);
+  }
+
+  private count(entry: RepeatedLine, line: string): void {
     entry.seen += 1;
+    entry.lastSeenAt = this.now();
     if (entry.seen <= 2) {
       this.write(line);
       return;
@@ -73,14 +92,12 @@ export class GameLogReducer {
     if (this.now() - entry.lastReportAt >= REPORT_INTERVAL_MS) this.report(entry);
   }
 
-  flush(): void {
-    for (const entry of this.repeated.values()) this.report(entry);
-  }
-
-  private evictColdest(): void {
+  private evictStale(): boolean {
     const [key, entry] = this.repeated.entries().next().value!;
+    if (this.now() - entry.lastSeenAt < REPORT_INTERVAL_MS) return false;
     this.report(entry);
     this.repeated.delete(key);
+    return true;
   }
 
   private report(entry: RepeatedLine): void {
@@ -91,19 +108,42 @@ export class GameLogReducer {
   }
 }
 
-// Backstop against any spam source the reducer does not recognise: stop
-// writing the file once it reaches maxBytes, leaving one final notice.
-export function cappedLogWriter(write: (text: string) => void, maxBytes = MAX_LOG_BYTES): (text: string) => void {
-  let written = 0;
-  let capped = false;
-  return (text) => {
-    if (capped) return;
-    written += Buffer.byteLength(text);
-    if (written <= maxBytes) {
-      write(text);
-      return;
+// Backstop against any spam source the reducer does not recognise: past
+// maxBytes the file keeps only the last tailLines lines, written on end(), so
+// the exit code and final summaries still reach it.
+export class CappedLog {
+  private written = 0;
+  private omitted = 0;
+  private capped = false;
+  private readonly tail: string[] = [];
+
+  constructor(
+    private readonly write: (text: string) => void,
+    private readonly maxBytes = MAX_LOG_BYTES,
+    private readonly tailLines = 200,
+  ) {}
+
+  push(text: string): void {
+    if (!this.capped) {
+      this.written += Buffer.byteLength(text);
+      if (this.written <= this.maxBytes) {
+        this.write(text);
+        return;
+      }
+      this.capped = true;
+      this.write(`Log size limit of ${Math.round(this.maxBytes / 1024 / 1024)} MB reached; only the last ${this.tailLines} lines of further output will be written when the game exits. Enable verbose logs in Settings or set XODUS_NEXUS_VERBOSE_LOGS=1 for full output.\n`);
     }
-    capped = true;
-    write(`Log size limit of ${Math.round(maxBytes / 1024 / 1024)} MB reached; further game output is not written to this file. Enable verbose logs in Settings or set XODUS_NEXUS_VERBOSE_LOGS=1 for full output.\n`);
-  };
+    this.tail.push(text);
+    if (this.tail.length > this.tailLines) {
+      this.tail.shift();
+      this.omitted += 1;
+    }
+  }
+
+  end(): void {
+    if (!this.capped) return;
+    this.write(`Omitted ${this.omitted} lines over the log size limit; the last ${this.tail.length} follow.\n`);
+    for (const text of this.tail.splice(0)) this.write(text);
+    this.omitted = 0;
+  }
 }

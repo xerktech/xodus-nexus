@@ -18,7 +18,7 @@ import { RuntimeManager } from './runtime.js';
 import { prepareProtonRunner, syncPrefixUserLocale, syncUnrealCultureGameIni } from './proton.js';
 import { CatalogService } from './catalog.js';
 import { cloudSaveRuntime, selectedWinePath, startXodusService, storeContentRuntime, unbridgedCloudSaveRuntime, type XodusServiceSession } from './xodus-service.js';
-import { GameLogReducer, cappedLogWriter, gameLoggingEnvironment, gameWindowEnvironment } from './game-log.js';
+import { CappedLog, GameLogReducer, gameLoggingEnvironment, gameWindowEnvironment } from './game-log.js';
 import { downloadVerifiedVcRedist, installedVcRuntimeVersion, VC_REDIST_VERSION, versionAtLeast } from './vc-runtime.js';
 import { assertGameRemovalAvailable, validateGameDeleteTarget } from './game-removal.js';
 import { deleteGameDirectory } from './game-delete.js';
@@ -854,8 +854,8 @@ async function prepareGameLaunch(id: string): Promise<void> {
   launchLog.on('error', (error) => console.error(`Unable to write launch log ${logPath}:`, error));
   const verboseLogs = process.env.XODUS_NEXUS_VERBOSE_LOGS === '1' || store.settings.verboseLogs;
   // Verbose mode promises full output, so only the default mode is capped.
-  const writeLaunchFile = cappedLogWriter((text) => launchLog.write(text), verboseLogs ? Infinity : undefined);
-  const writeLaunchLog = (line: string) => writeLaunchFile(`[${new Date().toISOString()}] ${line}\n`);
+  const launchFile = new CappedLog((text) => launchLog.write(text), verboseLogs ? Infinity : undefined);
+  const writeLaunchLog = (line: string) => launchFile.push(`[${new Date().toISOString()}] ${line}\n`);
   gameOperation = {
     id: operationId,
     gameId: id,
@@ -972,6 +972,7 @@ async function prepareGameLaunch(id: string): Promise<void> {
         await tracked.cleanup().catch((error) => console.error('Game service cleanup failed:', error));
         await launchWrapper?.cleanup().catch((error) => console.error('Game wrapper cleanup failed:', error));
         gameLog.flush();
+        launchFile.end();
         launchLog.end();
         emitSnapshot();
         if (gameOperation?.status === 'failed' && shortcutOnly) await shortcutError(new Error(gameOperation.error ?? 'The game exited with an error.'));
@@ -986,6 +987,7 @@ async function prepareGameLaunch(id: string): Promise<void> {
     }
     writeLaunchLog(`Preparation error: ${(error as Error).message}`);
     gameLog.flush();
+    launchFile.end();
     launchLog.end();
     if (gameOperation?.id === operationId) gameOperation = undefined;
     emitSnapshot();

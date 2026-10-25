@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { GameLogReducer, cappedLogWriter, gameLoggingEnvironment, gameWindowEnvironment } from './game-log.js';
+import { CappedLog, GameLogReducer, gameLoggingEnvironment, gameWindowEnvironment } from './game-log.js';
 
 describe('GameLogReducer', () => {
   it('coalesces interleaved verbose lines with changing Wine addresses', () => {
@@ -23,29 +23,57 @@ describe('GameLogReducer', () => {
     expect(output.join('\n')).toContain('Suppressed 998 repeated fixme:vkd3d-proton');
   });
 
-  it('evicts the coldest signature instead of passing new ones through raw once full', () => {
+  it('evicts stale signatures instead of passing new ones through raw once full', () => {
     const output: string[] = [];
-    const reducer = new GameLogReducer((line) => output.push(line), false, () => 0);
-    reducer.push('0124:fixme:seh:OutputDebugStringA "asset 0 loaded"');
-    reducer.push('0124:fixme:seh:OutputDebugStringA "asset 0 loaded"');
-    reducer.push('0124:fixme:seh:OutputDebugStringA "asset 0 loaded"');
+    let time = 0;
+    const reducer = new GameLogReducer((line) => output.push(line), false, () => time);
+    for (let index = 0; index < 3; index += 1) reducer.push('0124:fixme:seh:OutputDebugStringA "asset 0 loaded"');
     for (let index = 1; index < 512; index += 1) reducer.push(`0124:fixme:seh:OutputDebugStringA "asset ${index} loaded"`);
+    time = 11_000;
     for (let index = 0; index < 100_000; index += 1) reducer.push('0124:fixme:vkd3d-proton:skip_dword_unknown: Skipping 0x1 unknown DWORDs.');
-    // 3 lines for asset 0 (one suppressed, reported on eviction), 511 assets, 2 skip_dword lines.
-    expect(output.slice(0, 2)).toEqual(['0124:fixme:seh:OutputDebugStringA "asset 0 loaded"', '0124:fixme:seh:OutputDebugStringA "asset 0 loaded"']);
+    // asset 0 is written twice and its one suppressed line is reported on eviction.
     expect(output[513]).toContain('Suppressed 1 repeated fixme:seh:OutputDebugStringA "asset 0 loaded"');
     reducer.flush();
     expect(output).toHaveLength(517);
     expect(output.at(-1)).toContain('Suppressed 99998 repeated fixme:vkd3d-proton:skip_dword_unknown');
   });
 
-  it('keeps recently repeated signatures when evicting', () => {
+  it('collapses new signatures into a shared slot while every slot is in active use', () => {
     const output: string[] = [];
     const reducer = new GameLogReducer((line) => output.push(line), false, () => 0);
+    for (let index = 0; index < 512; index += 1) reducer.push(`0124:fixme:seh:OutputDebugStringA "asset ${index} loaded"`);
+    for (let index = 0; index < 100_000; index += 1) reducer.push('0124:fixme:vkd3d-proton:skip_dword_unknown: Skipping 0x1 unknown DWORDs.');
+    reducer.flush();
+    expect(output).toHaveLength(515);
+    expect(output.at(-1)).toContain('Suppressed 99998 repeated diagnostics beyond 512 distinct signatures');
+  });
+
+  it('does not thrash when a cycle of more than 512 signatures repeats', () => {
+    const output: string[] = [];
+    let time = 0;
+    const reducer = new GameLogReducer((line) => output.push(line), false, () => time);
+    for (let cycle = 0; cycle < 200; cycle += 1) {
+      for (let index = 0; index < 600; index += 1) {
+        reducer.push(`0124:fixme:cycle:line ${index}`);
+        time += 1;
+      }
+    }
+    reducer.flush();
+    // 512 signatures and the shared slot each write two lines; the rest are
+    // the usual per-interval summaries, not raw lines.
+    expect(output.filter((line) => !line.startsWith('Suppressed'))).toHaveLength(1_026);
+    expect(output.length).toBeLessThan(10_000);
+  });
+
+  it('keeps recently repeated signatures when evicting', () => {
+    const output: string[] = [];
+    let time = 0;
+    const reducer = new GameLogReducer((line) => output.push(line), false, () => time);
     reducer.push('0124:fixme:hot:repeat stub');
     for (let index = 0; index < 600; index += 1) {
       reducer.push(`0124:fixme:cold:line ${index}`);
       reducer.push('0124:fixme:hot:repeat stub');
+      time += 100;
     }
     expect(output.filter((line) => line === '0124:fixme:hot:repeat stub')).toHaveLength(2);
   });
@@ -59,22 +87,36 @@ describe('GameLogReducer', () => {
   });
 });
 
-describe('cappedLogWriter', () => {
-  it('stops writing past the byte limit with one final notice', () => {
+describe('CappedLog', () => {
+  it('stops at the byte limit and writes the last lines on end', () => {
     const output: string[] = [];
-    const write = cappedLogWriter((text) => output.push(text), 10);
-    write('12345\n');
-    write('é\n');
-    write('123\n');
-    write('later\n');
-    expect(output).toHaveLength(3);
-    expect(output[2]).toContain('Log size limit');
+    const log = new CappedLog((text) => output.push(text), 11, 2);
+    log.push('12345\n');
+    log.push('é\n');
+    log.push('x\n');
+    log.push('omitted\n');
+    log.push('kept\n');
+    log.push('exit code 5\n');
+    expect(output).toEqual(['12345\n', 'é\n', 'x\n', expect.stringContaining('Log size limit')]);
+    log.end();
+    expect(output.slice(4)).toEqual([expect.stringContaining('Omitted 1 lines'), 'kept\n', 'exit code 5\n']);
+  });
+
+  it('defaults to a 64 MB limit', () => {
+    let bytes = 0;
+    let notices = 0;
+    const log = new CappedLog((text) => { if (text.startsWith('Log size limit of 64 MB')) notices += 1; else bytes += text.length; });
+    const chunk = 'x'.repeat(1024 * 1024);
+    for (let index = 0; index < 65; index += 1) log.push(chunk);
+    expect(bytes).toBe(64 * 1024 * 1024);
+    expect(notices).toBe(1);
   });
 
   it('writes everything when uncapped', () => {
     const output: string[] = [];
-    const write = cappedLogWriter((text) => output.push(text), Infinity);
-    for (let index = 0; index < 100; index += 1) write('x'.repeat(1_000));
+    const log = new CappedLog((text) => output.push(text), Infinity);
+    for (let index = 0; index < 100; index += 1) log.push('x'.repeat(1_000));
+    log.end();
     expect(output).toHaveLength(100);
   });
 });
