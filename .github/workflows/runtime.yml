@@ -63,6 +63,9 @@ jobs:
     if: needs.changes.outputs.needed == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 120
+    outputs:
+      nexus_name: ${{ steps.package.outputs.nexus_name }}
+      nexus_version: ${{ steps.package.outputs.nexus_version }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -163,6 +166,7 @@ jobs:
             shared-build/runtime shared-build
 
       - name: Package verified runtime and corresponding source
+        id: package
         env:
           XZ_OPT: '-T2'
         run: |
@@ -191,6 +195,8 @@ jobs:
             scripts/assemble-shared-runtime.mjs scripts/SHARED_RUNTIME.md
           echo "nexus_version=$nexus_version" >> "$GITHUB_ENV"
           echo "nexus_name=$nexus_name" >> "$GITHUB_ENV"
+          echo "nexus_version=$nexus_version" >> "$GITHUB_OUTPUT"
+          echo "nexus_name=$nexus_name" >> "$GITHUB_OUTPUT"
 
       - name: Upload verified runtime
         uses: actions/upload-artifact@v4
@@ -235,3 +241,103 @@ jobs:
             test "$MEDIA_RESULT" = success
             test "$BUILD_RESULT" = success
           fi
+
+  # direwolf (xerktech/ArgoCD streaming/direwolf/app-nexus.yaml) installs this
+  # image's runtime with an initContainer before every Nexus session, so each
+  # verified runtime built from main is deployed without a hand step.
+  image:
+    needs: [build, runtime-gate]
+    if: needs.build.result == 'success' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      ref: ${{ steps.ref.outputs.ref }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: nexus-runtime
+          path: candidate
+      - name: Unpack the verified runtime into the image context
+        env:
+          NEXUS_NAME: ${{ needs.build.outputs.nexus_name }}
+        run: |
+          set -euo pipefail
+          [[ "$NEXUS_NAME" =~ ^xodus-nexus-runtime-[A-Za-z0-9._-]+$ ]]
+          (cd candidate && sha512sum -c "$NEXUS_NAME-x86_64.sha512sum")
+          mkdir -p scripts/runtime-image/runtime
+          tar -xJf "candidate/$NEXUS_NAME-x86_64.tar.xz" -C scripts/runtime-image/runtime
+          test -f "scripts/runtime-image/runtime/$NEXUS_NAME/files/bin/wine"
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: scripts/runtime-image
+          push: true
+          tags: ghcr.io/${{ github.repository }}/runtime:${{ needs.build.outputs.nexus_version }}
+      - id: ref
+        env:
+          TAG: ghcr.io/${{ github.repository }}/runtime:${{ needs.build.outputs.nexus_version }}
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::no digest for $TAG" >&2; exit 1; }
+          echo "ref=$TAG@$DIGEST" >> "$GITHUB_OUTPUT"
+
+  # Pins the image by digest in xerktech/ArgoCD, whose direwolf Application is
+  # automated, so Argo rolls it out. The token lives in the main-only
+  # argocd-deploy environment, never as a repo secret. Fails loudly when the
+  # token or the anchored image line is missing: direwolf would silently stay
+  # on the previous runtime otherwise.
+  deploy-argocd:
+    needs: image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: argocd-deploy
+    permissions: {}
+    steps:
+      - name: Pin the runtime image in ArgoCD
+        env:
+          TOKEN: ${{ secrets.ARGOCD_PUSH_TOKEN }}
+          GITOPS_REPO: ${{ github.repository_owner }}/ArgoCD
+          IMAGE: ghcr.io/${{ github.repository }}/runtime
+          REF: ${{ needs.image.outputs.ref }}
+          MANIFEST: streaming/direwolf/app-nexus.yaml
+        run: |
+          set -euo pipefail
+          if [ -z "$TOKEN" ]; then
+            echo "::error::ARGOCD_PUSH_TOKEN is not set in the argocd-deploy environment; direwolf stays on the previous runtime." >&2
+            exit 1
+          fi
+          [[ "$REF" =~ ^${IMAGE}:[A-Za-z0-9._-]+@sha256:[0-9a-f]{64}$ ]] || { echo "::error::bad image ref $REF" >&2; exit 1; }
+          git clone --quiet --depth 1 "https://x-access-token:${TOKEN}@github.com/${GITOPS_REPO}.git" gitops
+          cd gitops
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          for attempt in 1 2 3 4 5; do
+            if ! grep -qE "^[[:space:]]*image: ${IMAGE}[:@]" "$MANIFEST"; then
+              echo "::error::$MANIFEST has no 'image: $IMAGE' line to update." >&2
+              exit 1
+            fi
+            sed -i -E "s#^([[:space:]]*image: )${IMAGE}([:@][^[:space:]]*)?[[:space:]]*\$#\1${REF}#" "$MANIFEST"
+            if git diff --quiet; then
+              echo "ArgoCD already pins $REF"
+              exit 0
+            fi
+            git commit --quiet -am "direwolf: roll the Xodus Nexus runtime to ${REF#"$IMAGE":}"
+            if git push --quiet origin HEAD:main; then
+              echo "Pinned $REF in $GITOPS_REPO"
+              exit 0
+            fi
+            echo "Push attempt $attempt lost a race; retrying on the new main." >&2
+            git fetch --quiet --depth 1 origin main
+            git reset --quiet --hard origin/main
+          done
+          echo "::error::could not push the ArgoCD pin after 5 attempts" >&2
+          exit 1
