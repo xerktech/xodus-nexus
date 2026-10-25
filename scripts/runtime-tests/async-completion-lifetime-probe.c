@@ -54,7 +54,7 @@ static void WINAPI canceled_completed(XAsyncBlock *block)
 /* Native XAsync holds a queue termination suspension per operation, so
  * Terminate waits for outstanding calls: completions arriving after it still
  * reach the title's callback, and only then is termination reported. */
-static LONG term_callbacks, term_notified, term_callbacks_at_notify, term_work;
+static LONG term_callbacks, term_notified, term_callbacks_at_notify, term_work, term_cleanups, term_submitted, term_cleanups_at_notify;
 static HRESULT term_status;
 
 static void WINAPI term_completed(XAsyncBlock *block)
@@ -66,6 +66,7 @@ static void WINAPI term_completed(XAsyncBlock *block)
 static void CALLBACK term_finished(void *context)
 {
     term_callbacks_at_notify = term_callbacks;
+    term_cleanups_at_notify = term_cleanups;
     InterlockedIncrement(&term_notified);
 }
 
@@ -82,7 +83,13 @@ static HRESULT WINAPI scheduling_provider(XAsyncOp op, const XAsyncProviderData 
 /* Begin succeeds and the operation stays in flight until completed later. */
 static HRESULT WINAPI in_flight_provider(XAsyncOp op, const XAsyncProviderData *data)
 {
+    if (op == XAsyncOp_Cleanup) InterlockedIncrement(&term_cleanups);
     return S_OK;
+}
+
+static void CALLBACK submitted(void *context, BOOLEAN canceled)
+{
+    if (canceled) InterlockedIncrement(&term_submitted);
 }
 
 static HRESULT WINAPI counted_work(XAsyncBlock *block)
@@ -106,7 +113,7 @@ static void manual_termination(enum term_case kind)
 {
     XTaskQueueHandle target = NULL;
     XAsyncBlock block = {0};
-    term_callbacks = term_notified = term_callbacks_at_notify = term_work = 0;
+    term_callbacks = term_notified = term_callbacks_at_notify = term_work = term_cleanups = term_submitted = 0;
     term_status = E_PENDING;
     CHECK(IXThreadingImpl_XTaskQueueCreate(threads, XTaskQueueDispatchMode_Manual, XTaskQueueDispatchMode_Manual, &target) == S_OK);
     block.queue = target;
@@ -127,7 +134,12 @@ static void manual_termination(enum term_case kind)
     /* Terminate before the queued work is dispatched. */
     CHECK(IXThreadingImpl_XTaskQueueTerminate(threads, target, FALSE, NULL, term_finished) == S_OK);
     if (kind == IN_FLIGHT) {
+        /* While the call is outstanding, work is rejected but completion
+         * callbacks are still accepted and run as canceled. */
+        CHECK(IXThreadingImpl_XTaskQueueSubmitCallback(threads, target, XTaskQueuePort_Work, NULL, submitted) == E_ABORT);
+        CHECK(IXThreadingImpl_XTaskQueueSubmitCallback(threads, target, XTaskQueuePort_Completion, NULL, submitted) == S_OK);
         pump(target);
+        CHECK(term_submitted == 1);
         CHECK(term_notified == 0);
         IXThreadingImpl_XAsyncComplete(threads, &block, S_OK, 0);
     }
@@ -138,6 +150,26 @@ static void manual_termination(enum term_case kind)
     CHECK(term_notified == 1);
     CHECK(term_callbacks_at_notify == 1);
     CHECK(IXThreadingImpl_XAsyncGetStatus(threads, &block, TRUE) == term_status);
+    /* Nothing may be dispatched after the termination notification. */
+    CHECK(IXThreadingImpl_XTaskQueueSubmitCallback(threads, target, XTaskQueuePort_Completion, NULL, submitted) == E_ABORT);
+    IXThreadingImpl_XTaskQueueCloseHandle(threads, target);
+}
+
+/* Immediate ports report termination inside the final Complete. Provider
+ * cleanup of a call without a callback must already have run by then. */
+static void immediate_termination(void)
+{
+    XTaskQueueHandle target = NULL;
+    XAsyncBlock block = {0};
+    term_notified = term_cleanups = term_cleanups_at_notify = 0;
+    CHECK(IXThreadingImpl_XTaskQueueCreate(threads, XTaskQueueDispatchMode_Immediate, XTaskQueueDispatchMode_Immediate, &target) == S_OK);
+    block.queue = target;
+    CHECK(IXThreadingImpl_XAsyncBegin(threads, &block, NULL, NULL, "immediate", in_flight_provider) == S_OK);
+    CHECK(IXThreadingImpl_XTaskQueueTerminate(threads, target, FALSE, NULL, term_finished) == S_OK);
+    CHECK(term_notified == 0);
+    IXThreadingImpl_XAsyncComplete(threads, &block, S_OK, 0);
+    CHECK(term_notified == 1);
+    CHECK(term_cleanups_at_notify == 1);
     IXThreadingImpl_XTaskQueueCloseHandle(threads, target);
 }
 
@@ -159,7 +191,7 @@ static void pool_termination(BOOL in_flight)
     XTaskQueueHandle target = NULL;
     HANDLE thread = NULL;
     int i, calls = in_flight ? POOL_CALLS : POOL_CALLS / 2;
-    term_callbacks = term_notified = term_callbacks_at_notify = term_work = 0;
+    term_callbacks = term_notified = term_callbacks_at_notify = term_work = term_cleanups = 0;
     memset(pool_blocks, 0, sizeof(pool_blocks));
     CHECK(IXThreadingImpl_XTaskQueueCreate(threads, XTaskQueueDispatchMode_ThreadPool, XTaskQueueDispatchMode_ThreadPool, &target) == S_OK);
     for (i = 0; i < calls; i++) {
@@ -173,6 +205,8 @@ static void pool_termination(BOOL in_flight)
     CHECK(term_callbacks == calls);
     CHECK(term_notified == 1);
     CHECK(term_callbacks_at_notify == calls);
+    /* Provider cleanup has finished by the time Terminate(wait) returns. */
+    if (in_flight) CHECK(term_cleanups == calls);
     if (!in_flight) CHECK(term_work <= calls);
     if (thread) {
         CHECK(WaitForSingleObject(thread, 30000) == WAIT_OBJECT_0);
@@ -237,6 +271,7 @@ int main(int argc, char **argv)
     manual_termination(RUN);
     manual_termination(IN_FLIGHT);
     manual_termination(AFTER_TERMINATE);
+    immediate_termination();
     pool_termination(TRUE);
     pool_termination(FALSE);
     IXThreadingImpl_XTaskQueueCloseHandle(threads, queue);
