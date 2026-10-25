@@ -31,7 +31,7 @@
      {
          state->cleaned = 1;
          cleanup = TRUE;
-@@ -338,7 +348,9 @@ static HRESULT async_invoke_provider( struct async_state *state, XAsyncOp op )
+@@ -338,7 +348,9 @@ static HRESULT async_invoke_provider_data( struct async_state *state, XAsyncOp o
      HRESULT hr;
      BOOL cleanup = FALSE;
      EnterCriticalSection( &state->cs );
@@ -42,16 +42,16 @@
      {
          LeaveCriticalSection( &state->cs );
          return E_ABORT;
-@@ -347,7 +359,7 @@ static HRESULT async_invoke_provider( struct async_state *state, XAsyncOp op )
+@@ -347,7 +359,7 @@ static HRESULT async_invoke_provider_data( struct async_state *state, XAsyncOp o
      LeaveCriticalSection( &state->cs );
-     hr = state->provider( op, &state->data );
+     hr = state->provider( op, data );
      EnterCriticalSection( &state->cs );
 -    if (!--state->active_provider && state->cleanup_requested && !state->cleaned)
 +    if (!--state->active_provider && state->cleanup_requested && !state->cleaned && !async_completion_pending( state ))
      {
          state->cleaned = 1;
          cleanup = TRUE;
-@@ -563,6 +575,8 @@ static void async_finish_completion( struct async_state *state, BOOL cleanup )
+@@ -568,6 +580,8 @@ static void async_finish_completion( struct async_state *state, BOOL cleanup )
      EnterCriticalSection( &state->cs );
      state->completion_thread = 0;
      state->completion_finished = TRUE;
@@ -60,7 +60,7 @@
      LeaveCriticalSection( &state->cs );
      SetEvent( state->provider_block.internal[3] );
      if (cleanup) async_cleanup_state( state, state->provider );
-@@ -582,8 +596,8 @@ static void CALLBACK async_completion_callback( struct async_state *state, BOOLE
+@@ -587,8 +601,8 @@ static void CALLBACK async_completion_callback( struct async_state *state, BOOLE
      state->callback( state->user_block );
      /* The application may delete or reuse XAsyncBlock inside its completion
       * callback. Only the runtime-owned state may be touched after it returns.
@@ -71,7 +71,7 @@
      async_finish_completion( state, canceled || FAILED(state->status) || !state->data.bufferSize );
  }
  
-@@ -626,6 +640,16 @@ static HRESULT WINAPI x_threading_XAsyncGetResult( IXThreadingImpl *iface, XAsyn
+@@ -635,6 +649,16 @@ static HRESULT WINAPI x_threading_XAsyncGetResult( IXThreadingImpl *iface, XAsyn
      }
      if (identity != asyncBlock->internal[2] || !buffer) return E_INVALIDARG;
      if (bufferSize < required) return HRESULT_FROM_WIN32( ERROR_INSUFFICIENT_BUFFER );
@@ -86,5 +86,5 @@
 +    state->results_retrieved = TRUE;
 +    LeaveCriticalSection( &state->cs );
      /* GDK supplies the caller's capacity to GetResult, not the minimum
-      * payload size reported at Complete. Keep bufferUsed at that minimum. */
-     state->data.bufferSize = bufferSize;
+      * payload size reported at Complete. Keep bufferUsed at that minimum.
+      * The provider gets a private copy: concurrent GetResult/GetResultSize

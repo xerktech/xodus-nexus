@@ -27,7 +27,8 @@ The runtime does not provide a unique platform device identifier.
 - `async-provider-contract-probe.c`: Begin setup vs provider errors, pending
   work, work errors, missing completion, first-terminal-result wins, private
   provider block, and deleting the user block during immediate completion
-  without premature provider cleanup (58 checks).
+  without premature provider cleanup, and GetResultSize staying at the
+  completed size while GetResult runs with a larger buffer (117 checks).
 - `async-completion-lifetime-probe.c`: 400 completions with block deletion,
   result consumption and block reuse, plus a completion canceled by queue
   termination that must still reach the title's callback. Termination waits
