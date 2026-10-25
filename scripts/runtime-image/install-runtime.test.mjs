@@ -78,28 +78,33 @@ test('a copy that cannot read the whole runtime installs nothing', { skip: proce
   assert.equal(fs.readFileSync(path.join(root, 'releases/xodus-nexus-runtime-a/files/lib/secret'), 'utf8'), 'x');
 });
 
-test('concurrent runs serialize and leave one whole install', async () => {
+test('concurrent runs leave one whole install', async () => {
   const tmp = scratch();
   const root = path.join(tmp, 'runtimes');
   const source = runtime(path.join(tmp, 'src'), 'xodus-nexus-runtime-a');
   const run = promisify(execFile);
-  await Promise.all(Array.from({ length: 4 }, () => run('sh', [script], { env: env(source, root) })));
+  await Promise.all(Array.from({ length: 8 }, () => run('sh', [script], { env: env(source, root) })));
   assert.equal(current(root).name, 'xodus-nexus-runtime-a');
   assert.deepEqual(releases(root), ['xodus-nexus-runtime-a']);
   assert.deepEqual(fs.readdirSync(path.join(root, 'releases/xodus-nexus-runtime-a')).sort(), ['.direwolf-runtime-image', 'files']);
   assert.deepEqual(fs.readdirSync(root).filter(entry => entry.startsWith('.')), []);
 });
 
-test('sweeps staging left by a killed run and breaks only stale locks', () => {
+test('sweeps only old staging and replaces an unmarked partial release', () => {
   const tmp = scratch();
   const root = path.join(tmp, 'runtimes');
-  fs.mkdirSync(path.join(root, '.staging-image-killed/xodus-nexus-runtime-a'), { recursive: true });
-  const lock = path.join(root, '.install-runtime.lock');
-  fs.mkdirSync(lock);
-  const old = new Date(Date.now() - 60 * 60 * 1000);
-  fs.utimesSync(lock, old, old);
+  const killed = path.join(root, '.staging-image-killed');
+  const copying = path.join(root, '.staging-image-copying');
+  fs.mkdirSync(path.join(killed, 'xodus-nexus-runtime-a'), { recursive: true });
+  fs.mkdirSync(copying);
+  const old = new Date(Date.now() - 3 * 60 * 60 * 1000);
+  fs.utimesSync(killed, old, old);
+  // Debris of an interrupted install: no marker, missing files.
+  fs.mkdirSync(path.join(root, 'releases/xodus-nexus-runtime-a/files'), { recursive: true });
   install(runtime(path.join(tmp, 'src'), 'xodus-nexus-runtime-a'), root);
-  assert.deepEqual(fs.readdirSync(root).filter(entry => entry.startsWith('.')), []);
+  assert.deepEqual(fs.readdirSync(root).filter(entry => entry.startsWith('.')), ['.staging-image-copying']);
+  assert.equal(fs.readFileSync(path.join(root, 'releases/xodus-nexus-runtime-a/files/lib/libwine.so'), 'utf8'), 'xodus-nexus-runtime-a');
+  assert.equal(fs.existsSync(path.join(root, 'releases/xodus-nexus-runtime-a/xodus-nexus-runtime-a')), false);
 });
 
 test('refuses an image without exactly one plainly named runtime', () => {

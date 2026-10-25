@@ -21,8 +21,10 @@ paths:
   - A new GHCR package starts private whatever the repo's visibility; it was made public by hand
     once, in the package settings, before ArgoCD first pinned it.
 - `install-runtime.sh` runs as uid 1000 (the shared home's owner) in busybox; CI tests it with dash.
-  - POSIX sh only: no pipefail (check each pipe side), no flock (busybox has none; it uses a
-    mkdir lock broken after 30 min), no `-x` checks on the source tree.
+  - POSIX sh only: no pipefail (check each pipe side), no `-x` checks on the source tree.
+  - No lock (busybox has no flock, and a SIGKILLed mkdir lock blocked sessions): each run copies
+    into private staging and publishes with one rename into `releases/`, which fails instead of
+    nesting when another run won. A marked release is therefore always whole.
   - It prunes only releases it installed (marker file), only when switching, and keeps the
     release `current.json` named until then: a running session may still read it.
   - Tests: `scripts/runtime-image/install-runtime.test.mjs`.
