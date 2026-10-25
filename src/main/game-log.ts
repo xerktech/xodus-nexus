@@ -11,10 +11,10 @@ interface RepeatedLine {
 function verboseSignature(line: string): { key: string; label: string } | null {
   // Match the level only in Wine's prefix position ([time:]pid:[tid:]level:channel:;
   // the time is space-padded and ids are %04x, so they can be longer than 4 digits),
-  // so err:/warn: lines whose message text contains ":fixme:" are never reduced.
-  const match = line.match(/^\s*(?:[\d.]+:)?(?:[0-9a-f]{4,8}:){0,2}(fixme|info|trace):([^:]+):(.+)$/i);
+  // so err: lines whose message text contains ":fixme:" are never reduced.
+  const match = line.match(/^\s*(?:[\d.]+:)?(?:[0-9a-f]{4,8}:){0,2}(fixme|info|trace|warn):([^:]+):(.+)$/i);
   if (!match) return null;
-  const detail = match[3].replace(/\b(?:0x)?[0-9a-f]{8,}\b/gi, '<address>');
+  const detail = match[3].replace(/\b(?:0x[0-9a-f]+|[0-9a-f]{8,})\b/gi, '<address>');
   const key = `${match[1].toLowerCase()}:${match[2].toLowerCase()}:${detail}`;
   return { key, label: key.slice(0, 120) };
 }
@@ -24,8 +24,11 @@ export function gameLoggingEnvironment(source: NodeJS.ProcessEnv, verbose = fals
   if (verbose) environment.XODUS_NEXUS_VERBOSE_LOGS = '1';
   if (environment.XODUS_NEXUS_VERBOSE_LOGS === '1') return environment;
   environment.WINEDEBUG ??= '-fixme';
-  environment.VKD3D_DEBUG ??= 'warn';
-  environment.VKD3D_SHADER_DEBUG ??= 'warn';
+  // vkd3d-proton warns once per unknown shader DWORD/checksum, which can add
+  // hundreds of MB per session. fixme (vkd3d's own default) drops those warn
+  // lines but keeps the build/version/config info needed for bug reports.
+  environment.VKD3D_DEBUG ??= 'fixme';
+  environment.VKD3D_SHADER_DEBUG ??= 'fixme';
   return environment;
 }
 
