@@ -9,15 +9,21 @@
 
 static IXThreadingImpl *threads;
 static XTaskQueueHandle queue;
-static LONG callbacks, cleanups, checks, failures, canceled_callbacks;
+static LONG callbacks, cleanups, results, cancels, checks, failures, canceled_callbacks;
 static HRESULT outcome;
 static SIZE_T payload;
-static BOOL consume, reuse;
+static BOOL consume, reuse, slow_results;
+static HANDLE race_start;
+static LONG race_successes;
+#define RACERS 4
 #define CHECK(x) do { checks++; if (!(x)) { failures++; printf("FAIL %d\n", __LINE__); } } while (0)
 
 static HRESULT WINAPI provider(XAsyncOp op, const XAsyncProviderData *data)
 {
     if (op == XAsyncOp_GetResult && data->buffer) *(DWORD *)data->buffer = 0x12345678;
+    if (op == XAsyncOp_GetResult) InterlockedIncrement(&results);
+    if (op == XAsyncOp_GetResult && slow_results) Sleep(3);
+    if (op == XAsyncOp_Cancel) InterlockedIncrement(&cancels);
     if (op == XAsyncOp_Cleanup) InterlockedIncrement(&cleanups);
     return S_OK;
 }
@@ -25,10 +31,18 @@ static HRESULT WINAPI provider(XAsyncOp op, const XAsyncProviderData *data)
 static void WINAPI completed(XAsyncBlock *block)
 {
     DWORD result = 0;
+    LONG entry = cleanups;
     CHECK(IXThreadingImpl_XAsyncGetStatus(threads, block, FALSE) == outcome);
     if (consume) {
         CHECK(IXThreadingImpl_XAsyncGetResult(threads, block, NULL, sizeof(result), &result, NULL) == S_OK);
         CHECK(result == 0x12345678);
+        /* Native XAsync runs provider Cleanup only after this callback
+         * returns; titles may read result data after closing its handle. */
+        CHECK(cleanups == entry);
+        /* Results are returned once; a finished operation ignores Cancel. */
+        CHECK(IXThreadingImpl_XAsyncGetResult(threads, block, NULL, sizeof(result), &result, NULL) == E_ILLEGAL_METHOD_CALL);
+        IXThreadingImpl_XAsyncCancel(threads, block);
+        CHECK(cleanups == entry);
     }
     InterlockedIncrement(&callbacks);
     if (reuse) {
@@ -205,7 +219,8 @@ static void pool_termination(BOOL in_flight)
     CHECK(term_callbacks == calls);
     CHECK(term_notified == 1);
     CHECK(term_callbacks_at_notify == calls);
-    /* Provider cleanup has finished by the time Terminate(wait) returns. */
+    /* Provider cleanup has finished by the time Terminate(wait) returns,
+     * unless a concurrent XAsyncCancel still holds the operation (as native). */
     if (in_flight) CHECK(term_cleanups == calls);
     if (!in_flight) CHECK(term_work <= calls);
     if (thread) {
@@ -213,6 +228,79 @@ static void pool_termination(BOOL in_flight)
         CloseHandle(thread);
     }
     IXThreadingImpl_XTaskQueueCloseHandle(threads, target);
+}
+
+static DWORD WINAPI race_get_result(void *block)
+{
+    DWORD result = 0;
+    WaitForSingleObject(race_start, INFINITE);
+    if (IXThreadingImpl_XAsyncGetResult(threads, block, NULL, sizeof(result), &result, NULL) == S_OK)
+        InterlockedIncrement(&race_successes);
+    return 0;
+}
+
+/* Racing GetResult calls while the callback is still running: exactly one
+ * caller gets the results and the provider hands them out once. */
+static void WINAPI raced(XAsyncBlock *block)
+{
+    HANDLE racers[RACERS];
+    LONG entry = cleanups;
+    int i;
+    ResetEvent(race_start);
+    race_successes = 0;
+    for (i = 0; i < RACERS; i++) racers[i] = CreateThread(NULL, 0, race_get_result, block, 0, NULL);
+    SetEvent(race_start);
+    CHECK(WaitForMultipleObjects(RACERS, racers, TRUE, 10000) == WAIT_OBJECT_0);
+    for (i = 0; i < RACERS; i++) CloseHandle(racers[i]);
+    CHECK(race_successes == 1);
+    CHECK(cleanups == entry);
+}
+
+/* GetResult in a completion callback on a terminating queue: provider cleanup
+ * still waits for the callback and finishes before termination is reported. */
+static XTaskQueueHandle deferred_queue;
+static BOOL terminate_in_callback;
+static LONG deferred_cleanups_at_notify, deferred_notified, deferred_in_callback;
+
+static void CALLBACK deferred_finished(void *context)
+{
+    deferred_cleanups_at_notify = cleanups;
+    InterlockedIncrement(&deferred_notified);
+}
+
+static void WINAPI deferred_completed(XAsyncBlock *block)
+{
+    DWORD result = 0;
+    LONG entry = cleanups;
+    CHECK(IXThreadingImpl_XAsyncGetResult(threads, block, NULL, sizeof(result), &result, NULL) == S_OK);
+    CHECK(result == 0x12345678);
+    if (terminate_in_callback)
+        CHECK(IXThreadingImpl_XTaskQueueTerminate(threads, deferred_queue, FALSE, NULL, deferred_finished) == S_OK);
+    CHECK(cleanups == entry);
+    CHECK(deferred_notified == 0);
+    InterlockedIncrement(&deferred_in_callback);
+}
+
+static void deferred_termination(BOOL in_callback)
+{
+    XAsyncBlock block = {0};
+    LONG before = cleanups;
+    deferred_notified = deferred_in_callback = 0;
+    terminate_in_callback = in_callback;
+    CHECK(IXThreadingImpl_XTaskQueueCreate(threads, XTaskQueueDispatchMode_Manual, XTaskQueueDispatchMode_Manual, &deferred_queue) == S_OK);
+    block.queue = deferred_queue;
+    block.callback = deferred_completed;
+    CHECK(IXThreadingImpl_XAsyncBegin(threads, &block, NULL, NULL, "deferred", provider) == S_OK);
+    IXThreadingImpl_XAsyncComplete(threads, &block, S_OK, sizeof(DWORD));
+    /* Otherwise terminate first, so the queued completion runs canceled. */
+    if (!in_callback)
+        CHECK(IXThreadingImpl_XTaskQueueTerminate(threads, deferred_queue, FALSE, NULL, deferred_finished) == S_OK);
+    pump(deferred_queue);
+    CHECK(deferred_in_callback == 1);
+    CHECK(deferred_notified == 1);
+    CHECK(deferred_cleanups_at_notify == before + 1);
+    CHECK(cleanups == before + 1);
+    IXThreadingImpl_XTaskQueueCloseHandle(threads, deferred_queue);
 }
 
 int main(int argc, char **argv)
@@ -250,6 +338,8 @@ int main(int argc, char **argv)
     }
     CHECK(callbacks == 400);
     CHECK(cleanups == 500);
+    CHECK(results == 100);
+    CHECK(cancels == 0);
     {
         XTaskQueueHandle terminated = NULL;
         XAsyncBlock *block = VirtualAlloc(NULL, 4096, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
@@ -274,6 +364,25 @@ int main(int argc, char **argv)
     immediate_termination();
     pool_termination(TRUE);
     pool_termination(FALSE);
+    deferred_termination(FALSE);
+    deferred_termination(TRUE);
+    race_start = CreateEventA(NULL, TRUE, FALSE, NULL);
+    slow_results = TRUE;
+    for (i = 0; i < 50; i++) {
+        LONG before = cleanups, handed = results;
+        XAsyncBlock *block = VirtualAlloc(NULL, 4096, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+        CHECK(block != NULL);
+        if (!block) return 1;
+        block->queue = queue;
+        block->callback = raced;
+        CHECK(IXThreadingImpl_XAsyncBegin(threads, block, NULL, NULL, "race", provider) == S_OK);
+        IXThreadingImpl_XAsyncComplete(threads, block, S_OK, sizeof(DWORD));
+        CHECK(IXThreadingImpl_XTaskQueueDispatch(threads, queue, XTaskQueuePort_Completion, 0));
+        CHECK(results == handed + 1);
+        CHECK(cleanups == before + 1);
+        CHECK(VirtualFree(block, 0, MEM_RELEASE));
+    }
+    CloseHandle(race_start);
     IXThreadingImpl_XTaskQueueCloseHandle(threads, queue);
     IXThreadingImpl_Release(threads);
     printf("ASYNC CHECKS %ld FAILURES %ld CALLBACKS %ld CANCELED %ld CLEANUPS %ld\n", checks, failures, callbacks, canceled_callbacks, cleanups);
