@@ -28,7 +28,12 @@ fail() {
   exit 1
 }
 
-set -- "$src_root"/xodus-nexus-runtime-*
+# Our builds (xodus-nexus-runtime-*) or an upstream nexus-runtime candidate
+# (upstream-runtime.yml). An unmatched pattern stays literal, so test each.
+set --
+for dir in "$src_root"/xodus-nexus-runtime-* "$src_root"/nexus-runtime-*; do
+  [ ! -e "$dir" ] || set -- "$@" "$dir"
+done
 if [ "$#" -ne 1 ] || [ ! -f "$1/files/bin/wine" ]; then
   fail "expected one runtime under $src_root"
 fi

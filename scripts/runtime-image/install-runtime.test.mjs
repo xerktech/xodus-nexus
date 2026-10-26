@@ -144,3 +144,16 @@ test('refuses an image without exactly one plainly named runtime', () => {
   assert.throws(() => install(source, root));
   assert.equal(fs.existsSync(path.join(root, 'current.json')), false);
 });
+
+test('installs an upstream nexus-runtime candidate, but never beside one of ours', () => {
+  const tmp = scratch();
+  const root = path.join(tmp, 'runtimes');
+  install(runtime(path.join(tmp, 'ours'), 'xodus-nexus-runtime-a'), root);
+  install(runtime(path.join(tmp, 'upstream'), 'nexus-runtime-11.0-experimental-g8a7cd313'), root);
+  assert.equal(current(root).name, 'nexus-runtime-11.0-experimental-g8a7cd313');
+  assert.equal(current(root).winePath, path.join(root, 'releases/nexus-runtime-11.0-experimental-g8a7cd313/files/bin/wine'));
+  const both = runtime(path.join(tmp, 'both'), 'xodus-nexus-runtime-b');
+  runtime(both, 'nexus-runtime-c');
+  assert.throws(() => install(both, root));
+  assert.equal(current(root).name, 'nexus-runtime-11.0-experimental-g8a7cd313');
+});

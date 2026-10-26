@@ -1,0 +1,134 @@
+name: Deploy an upstream runtime
+
+# Runs an unmodified upstream runtime in direwolf: packages a successful
+# domsvoboda/nexus-runtime "Nexus runtime candidate" build into the same
+# initContainer image runtime.yml builds, and pins it in xerktech/ArgoCD.
+# The next runtime.yml build on main pins our own runtime again.
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: domsvoboda/nexus-runtime "Nexus runtime candidate" run ID (a successful main run)
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: upstream-runtime
+  cancel-in-progress: false
+
+jobs:
+  image:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+      # Cross-repo artifact download, as runtime.yml's Proton snapshot step has it.
+      actions: read
+    outputs:
+      ref: ${{ steps.ref.outputs.ref }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch and verify the upstream candidate
+        id: candidate
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_ID: ${{ inputs.run_id }}
+          UPSTREAM: domsvoboda/nexus-runtime
+        run: |
+          set -euo pipefail
+          [[ "$RUN_ID" =~ ^[0-9]+$ ]] || { echo "::error::run_id must be numeric" >&2; exit 1; }
+          run=$(gh api "repos/$UPSTREAM/actions/runs/$RUN_ID" --jq '[.name, .head_branch, .conclusion, .head_repository.full_name] | @tsv')
+          [[ "$run" == $'Nexus runtime candidate\tmain\tsuccess\t'"$UPSTREAM" ]] || {
+            echo "::error::run $RUN_ID is not a successful $UPSTREAM main candidate: $run" >&2; exit 1; }
+          gh run download "$RUN_ID" --repo "$UPSTREAM" --name nexus-runtime --dir candidate
+          shopt -s nullglob
+          archives=(candidate/nexus-runtime-*-x86_64.tar.xz)
+          [ "${#archives[@]}" -eq 1 ] || { echo "::error::expected one runtime archive" >&2; exit 1; }
+          name=${archives[0]#candidate/}
+          name=${name%-x86_64.tar.xz}
+          [[ "$name" =~ ^nexus-runtime-[A-Za-z0-9._-]+$ ]] || { echo "::error::unexpected runtime name $name" >&2; exit 1; }
+          # The sum file must name exactly this archive; sha512sum -c checks whatever it lists.
+          read -r sum file extra < "candidate/$name-x86_64.sha512sum" || true
+          [[ "$sum" =~ ^[0-9a-f]{128}$ && "$file" == "$name-x86_64.tar.xz" && -z "$extra" ]] ||
+            { echo "::error::$name-x86_64.sha512sum does not name $name-x86_64.tar.xz" >&2; exit 1; }
+          (cd candidate && echo "$sum  $file" | sha512sum -c -)
+          mkdir -p scripts/runtime-image/runtime
+          tar -xJf "candidate/$name-x86_64.tar.xz" -C scripts/runtime-image/runtime
+          if ! { [ "$(ls scripts/runtime-image/runtime)" = "$name" ] && test -f "scripts/runtime-image/runtime/$name/files/bin/wine"; }; then
+            echo "::error::$name-x86_64.tar.xz does not hold exactly $name/files/bin/wine" >&2
+            exit 1
+          fi
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: scripts/runtime-image
+          push: true
+          tags: ghcr.io/${{ github.repository }}/runtime:${{ steps.candidate.outputs.name }}
+      - id: ref
+        env:
+          TAG: ghcr.io/${{ github.repository }}/runtime:${{ steps.candidate.outputs.name }}
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::no digest for $TAG" >&2; exit 1; }
+          echo "ref=$TAG@$DIGEST" >> "$GITHUB_OUTPUT"
+
+  # Same pin as runtime.yml deploy-argocd. Kept as a copy: editing runtime.yml
+  # is a runtime input and would rebuild (and re-pin) our own runtime.
+  deploy-argocd:
+    needs: image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: argocd-deploy
+    permissions: {}
+    steps:
+      - name: Pin the runtime image in ArgoCD
+        env:
+          TOKEN: ${{ secrets.ARGOCD_PUSH_TOKEN }}
+          GITOPS_REPO: ${{ github.repository_owner }}/ArgoCD
+          IMAGE: ghcr.io/${{ github.repository }}/runtime
+          REF: ${{ needs.image.outputs.ref }}
+          MANIFEST: streaming/direwolf/app-nexus.yaml
+        run: |
+          set -euo pipefail
+          if [ -z "$TOKEN" ]; then
+            echo "::error::ARGOCD_PUSH_TOKEN is not set in the argocd-deploy environment; direwolf stays on the previous runtime." >&2
+            exit 1
+          fi
+          [[ "$REF" =~ ^${IMAGE}:[A-Za-z0-9._-]+@sha256:[0-9a-f]{64}$ ]] || { echo "::error::bad image ref $REF" >&2; exit 1; }
+          git clone --quiet --depth 1 "https://x-access-token:${TOKEN}@github.com/${GITOPS_REPO}.git" gitops
+          cd gitops
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          line="^([[:space:]]*image: )${IMAGE}([:@][^[:space:]]*)?[[:space:]]*\$"
+          for attempt in 1 2 3 4 5; do
+            if ! grep -qE "$line" "$MANIFEST"; then
+              echo "::error::$MANIFEST has no plain 'image: $IMAGE...' line to update (no quotes or trailing comment)." >&2
+              exit 1
+            fi
+            sed -i -E "s#${line}#\1${REF}#" "$MANIFEST"
+            if git diff --quiet; then
+              echo "ArgoCD already pins $REF"
+              exit 0
+            fi
+            git commit --quiet -am "direwolf: roll the Xodus Nexus runtime to upstream ${REF#"$IMAGE":}"
+            if git push --quiet origin HEAD:main; then
+              echo "Pinned $REF in $GITOPS_REPO"
+              exit 0
+            fi
+            echo "Push attempt $attempt lost a race; retrying on the new main." >&2
+            git fetch --quiet --depth 1 origin main
+            git reset --quiet --hard origin/main
+          done
+          echo "::error::could not push the ArgoCD pin after 5 attempts" >&2
+          exit 1

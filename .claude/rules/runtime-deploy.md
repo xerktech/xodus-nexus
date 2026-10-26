@@ -1,6 +1,7 @@
 ---
 paths:
   - .github/workflows/runtime.yml
+  - .github/workflows/upstream-runtime.yml
   - scripts/runtime-image/**
 ---
 
@@ -13,6 +14,11 @@ paths:
     `install-runtime.sh` installs it into the shared home and rewrites Nexus's `current.json`.
   - The ArgoCD line must stay one anchored `image: ghcr.io/xerktech/xodus-nexus/runtime...` line;
     the job's sed and guard grep match only that shape and fail loudly otherwise.
+- `upstream-runtime.yml` (dispatch on `main`, a domsvoboda/nexus-runtime candidate run ID) pins an
+  unmodified upstream `nexus-runtime-*` build the same way, to test upstream without our patches.
+  - Its pin step is a copy of runtime.yml's: editing runtime.yml is a runtime input and would
+    rebuild and re-pin our own runtime.
+  - The next runtime.yml build on `main` pins our runtime again.
 - Only runtime-input changes build a runtime (`scripts/ci/runtime-needed.mjs`); a dispatch of
   runtime.yml on `main` forces one.
 - `ARGOCD_PUSH_TOKEN` (a PAT with write access to xerktech/ArgoCD) lives in the main-only
