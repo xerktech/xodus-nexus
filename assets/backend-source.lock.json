@@ -5,7 +5,7 @@
   "commit": "53ea781dcd073e31d7ea68e894134e9c959bff04",
   "rust": "1.99.0",
   "cargoLockSha256": "2259b343e00dadc263018beb7664b12e9d58a0b73bff502ad566f5f8619ce28a",
-  "patchId": "linux-run-v43",
+  "patchId": "linux-run-v44",
   "compatibility": "linux-run-v22",
   "patches": [
     { "file": "xodus-linux-run.patch", "sha256": "68f260ec2c6e9264c47ed1a650868511f5412a756725d4000a865804f4712e8b" },
@@ -49,6 +49,6 @@
     { "file": "xodus-bundle-membership.patch", "sha256": "a5eacc683d006b40247fbf124a62078080685b814cb09a33756083ab99adb72d" },
     { "file": "xodus-licensing-jwe.patch", "sha256": "6f0087e657f225e9a770405fbb34c2317f840615742c89b62f241f1b65c590ca" },
     { "file": "xodus-hosted-signin.patch", "sha256": "f52b16944ca7dfc837337e0257be380467f01872706252d7c2e981db0c57a8bc" },
-    { "file": "xodus-launch-view-sweep.patch", "sha256": "f07533ba2e3e8801ab42be59bde20e538a36f398c7b6c390557ec1d4e0fa3f3f" }
+    { "file": "xodus-launch-view-sweep.patch", "sha256": "5ae83cfeb22a14c323fec9c09a554e99094ae9f0f61efad6d4fce702484f8aca" }
   ]
 }

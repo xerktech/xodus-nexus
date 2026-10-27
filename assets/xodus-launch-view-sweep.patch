@@ -1,8 +1,8 @@
 diff --git a/crates/xodus-cli/src/commands/run.rs b/crates/xodus-cli/src/commands/run.rs
-index bb0b9e7..33942d4 100644
+index bb0b9e7..09cffac 100644
 --- a/crates/xodus-cli/src/commands/run.rs
 +++ b/crates/xodus-cli/src/commands/run.rs
-@@ -37,6 +37,157 @@ async fn playfab_auth_header(client: &reqwest::Client, tokens: &TokenManager) ->
+@@ -37,6 +37,162 @@ async fn playfab_auth_header(client: &reqwest::Client, tokens: &TokenManager) ->
  }
  
  const LAUNCH_STUB_SUFFIX: &str = ".xodus-launch.exe";
@@ -26,7 +26,7 @@ index bb0b9e7..33942d4 100644
 +    fn new(dir: TempDir) -> Self {
 +        // Without a lock the view is only swept once it is old, so a volume
 +        // that cannot take locks still launches.
-+        let lock = LaunchViewLock::acquire(&launch_view_lock_path(dir.path()))
++        let lock = LaunchViewLock::acquire(dir.path())
 +            .inspect_err(|error| eprintln!("could not lock launch view {}: {}", dir.path().display(), error))
 +            .ok();
 +        Self { dir, _lock: lock }
@@ -43,15 +43,20 @@ index bb0b9e7..33942d4 100644
 +}
 +
 +impl LaunchViewLock {
-+    fn acquire(path: &Path) -> std::io::Result<Self> {
++    fn acquire(view: &Path) -> std::io::Result<Self> {
 +        // Lock under a private name, then rename into place, so a sweep never
-+        // finds the final lock file unlocked while its view is live.
-+        let staging = tempfile::NamedTempFile::new_in(path.parent().unwrap_or(Path::new(".")))?;
++        // finds the final lock file unlocked while its view is live. Staging
++        // inside the view means a session killed before the rename leaves
++        // the file where sweeping the view removes it.
++        let path = launch_view_lock_path(view);
++        let staging = tempfile::NamedTempFile::new_in(view)?;
 +        fs2::FileExt::try_lock_exclusive(staging.as_file())?;
-+        let file = staging.persist(path).map_err(|error| error.error)?;
-+        let flags = fcntl_getfd(&file)?;
-+        fcntl_setfd(&file, flags - FdFlags::CLOEXEC)?;
-+        Ok(Self { path: path.to_path_buf(), _file: file })
++        // Before the rename, so a failure never leaves a published lock that
++        // the game does not hold.
++        let flags = fcntl_getfd(staging.as_file())?;
++        fcntl_setfd(staging.as_file(), flags - FdFlags::CLOEXEC)?;
++        let file = staging.persist(&path).map_err(|error| error.error)?;
++        Ok(Self { path, _file: file })
 +    }
 +}
 +
@@ -160,7 +165,7 @@ index bb0b9e7..33942d4 100644
  
  fn launch_image_error(name: &str, operation: &str, error: std::io::Error) -> std::io::Error {
      let shown: String = name.chars().take(240).collect();
-@@ -224,7 +375,7 @@ fn create_launch_chain_mirror(
+@@ -224,7 +380,7 @@ fn create_launch_chain_mirror(
      source_root: &Path,
      entry_suffix: &str,
      fds: &[(&String, RawFd)],
@@ -169,7 +174,7 @@ index bb0b9e7..33942d4 100644
      let entry_path = checked_relative_path(entry_suffix)?;
      let mut decrypted = HashMap::new();
      for (name, fd) in fds {
-@@ -251,10 +402,7 @@ fn create_launch_chain_mirror(
+@@ -251,10 +407,7 @@ fn create_launch_chain_mirror(
      }
      let decrypted_files: HashSet<PathBuf> = decrypted.keys().cloned().collect();
      let parent = source_root.parent().unwrap_or_else(|| Path::new("/tmp"));
@@ -181,7 +186,7 @@ index bb0b9e7..33942d4 100644
      populate_launch_view(
          source_root,
          mirror.path(),
-@@ -274,12 +422,9 @@ fn create_launch_chain_mirror(
+@@ -274,12 +427,9 @@ fn create_launch_chain_mirror(
  fn create_launch_mirror(
      source_root: &Path,
      entry_suffix: &str,
@@ -196,7 +201,7 @@ index bb0b9e7..33942d4 100644
      let components: Vec<&str> = entry_suffix
          .split(['\\', '/'])
          .filter(|component| !component.is_empty())
-@@ -827,6 +972,91 @@ mod tests {
+@@ -827,6 +977,91 @@ mod tests {
          image
      }
  
