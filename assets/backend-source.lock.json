@@ -49,6 +49,6 @@
     { "file": "xodus-bundle-membership.patch", "sha256": "a5eacc683d006b40247fbf124a62078080685b814cb09a33756083ab99adb72d" },
     { "file": "xodus-licensing-jwe.patch", "sha256": "6f0087e657f225e9a770405fbb34c2317f840615742c89b62f241f1b65c590ca" },
     { "file": "xodus-hosted-signin.patch", "sha256": "f52b16944ca7dfc837337e0257be380467f01872706252d7c2e981db0c57a8bc" },
-    { "file": "xodus-launch-view-sweep.patch", "sha256": "d4be8ab89eae7f1e4e7a5e1d7944fcccf1cf0b485bcd4623c7fd65564835fbc1" }
+    { "file": "xodus-launch-view-sweep.patch", "sha256": "f07533ba2e3e8801ab42be59bde20e538a36f398c7b6c390557ec1d4e0fa3f3f" }
   ]
 }
