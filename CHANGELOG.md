@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Remove temporary launch views left on the games volume by sessions that ended without a clean exit, keeping any view a running session still uses.
 - Wait for in-flight Xbox async operations when a game shuts down a task queue, so their completion callbacks still run instead of being dropped.
 - Run Xbox async completion callbacks canceled by task-queue shutdown, so games can release per-call data instead of leaking it or waiting forever.
 - Fix 007 First Light closing about 15 seconds after start (exit code 5): Xbox async results now stay valid until the game's completion callback returns, as on Windows.
