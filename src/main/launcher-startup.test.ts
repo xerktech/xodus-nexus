@@ -119,7 +119,7 @@ describe('visible launcher before keyring/account access (#212)', () => {
     const source = readFileSync('src/main/index.ts', 'utf8');
     const tail = source.slice(source.indexOf('await syncManagedWinePath();', source.indexOf('app.whenReady()')));
     expect(tail).toContain('await showBeforeAccountCheck(');
-    expect(tail).toMatch(/if \(startupRequest.gameId\) \{\s*await prepareSystemWallet\(\);\s*await refreshAccount\(false\);\s*receiveLaunchRequest/);
+    expect(tail).toMatch(/startupLaunchPending = Boolean\(startupRequest.gameId\);\s*launchReady = true;\s*if \(startupRequest.gameId\) \{\s*await prepareSystemWallet\(\);\s*await refreshAccount\(false\);\s*startupLaunchPending = false;\s*receiveLaunchRequest/);
     expect(tail.indexOf('registerIpc();')).toBeLessThan(tail.indexOf('await showBeforeAccountCheck('));
   });
 });
@@ -175,5 +175,25 @@ describe('capability-bound session wallet shutdown', () => {
     runInContext(js, context);
     expect(await actions!.unlock()).toBe('cancelled');
     expect(unlock).not.toHaveBeenCalled();
+  });
+});
+
+describe('game shortcut startup is not ended before its launch is registered (#457)', () => {
+  const source = readFileSync('src/main/index.ts', 'utf8');
+  const begin = source.indexOf('function finishShortcutSession()');
+  const js = transpileModule(source.slice(begin, source.indexOf('\nfunction receiveLaunchRequest(', begin)), { compilerOptions: { target: ScriptTarget.ES2022 } }).outputText;
+  const idle = (startupLaunchPending: boolean) => {
+    const quit = vi.fn();
+    const context = createContext({ app: { quit }, launchReady: true, startupLaunchPending, shortcutOnly: true, mainWindow: undefined,
+      nativeSocialKeepAlive: [], shortcutLaunch: { preparing: false }, preparingLaunch: false, finalizingGame: false,
+      downloadCancellations: new Map(), installQueue: new Set(), operations: new Map(), serviceSessions: new Map() });
+    runInContext(js + '\nfinishShortcutSession()', context);
+    return quit;
+  };
+  it('keeps Nexus running when party or voice state settles during startup account refresh', () => {
+    expect(idle(true)).not.toHaveBeenCalled();
+  });
+  it('still quits an idle shortcut session once the launch was registered and finished', () => {
+    expect(idle(false)).toHaveBeenCalledOnce();
   });
 });
