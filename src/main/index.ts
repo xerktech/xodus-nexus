@@ -228,6 +228,9 @@ let preparingInstall = false;
 let preparingContent = false;
 let finalizingGame = false;
 let shortcutOnly = false;
+// A --launch-game start is ready before its request is registered (the wallet
+// and account are prepared first); until then nothing may end the session.
+let startupLaunchPending = false;
 let launchReady = false;
 let windowOpening: Promise<void> | undefined;
 const pendingRequests: (string | undefined)[] = [];
@@ -275,7 +278,7 @@ async function shortcutError(error: unknown): Promise<void> {
 }
 function finishShortcutSession(): void {
   // Account service and game-process cleanup must finish before normal quit.
-  if (launchReady && (shortcutOnly || !mainWindow || mainWindow.isDestroyed()) && !nativeSocialKeepAlive.some(active=>active()) && !shortcutLaunch.preparing && !preparingLaunch && !finalizingGame && downloadCancellations.size === 0 && installQueue.size === 0 && operations.size === 0 && serviceSessions.size === 0) app.quit();
+  if (launchReady && !startupLaunchPending && (shortcutOnly || !mainWindow || mainWindow.isDestroyed()) && !nativeSocialKeepAlive.some(active=>active()) && !shortcutLaunch.preparing && !preparingLaunch && !finalizingGame && downloadCancellations.size === 0 && installQueue.size === 0 && operations.size === 0 && serviceSessions.size === 0) app.quit();
 }
 function receiveLaunchRequest(id?: string): void {
   if (!launchReady) { pendingRequests.push(id); return; }
@@ -2306,10 +2309,12 @@ app.whenReady().then(async () => {
    await overlayShortcut.configure(store.settings);
   }
   // No external toggle socket or compositor scripts are installed automatically.
+  startupLaunchPending = Boolean(startupRequest.gameId);
   launchReady = true;
   if (startupRequest.gameId) {
     await prepareSystemWallet();
     await refreshAccount(false);
+    startupLaunchPending = false;
     receiveLaunchRequest(startupRequest.gameId);
   } else await showBeforeAccountCheck(showLauncher, refreshInitialAccount, () => {
     if (shutdownStarted || authState.running || authState.lastResult === 'success') return;
