@@ -244,7 +244,7 @@ jobs:
             test "$BUILD_RESULT" = success
           fi
 
-  # direwolf (xerktech/ArgoCD streaming/direwolf/app-nexus.yaml) installs this
+  # direwolf (xerktech/ArgoCD games/direwolf/app-nexus.yaml) installs this
   # image's runtime with an initContainer before every Nexus session, so each
   # verified runtime built from main is deployed without a hand step.
   image:
@@ -311,7 +311,7 @@ jobs:
           GITOPS_REPO: ${{ github.repository_owner }}/ArgoCD
           IMAGE: ghcr.io/${{ github.repository }}/runtime
           REF: ${{ needs.image.outputs.ref }}
-          MANIFEST: streaming/direwolf/app-nexus.yaml
+          MANIFEST: games/direwolf/app-nexus.yaml
         run: |
           set -euo pipefail
           if [ -z "$TOKEN" ]; then
