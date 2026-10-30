@@ -17,7 +17,7 @@ paths:
   runtime.yml on `main` forces one.
 - `ARGOCD_PUSH_TOKEN` (a PAT with write access to xerktech/ArgoCD) lives in the main-only
   `argocd-deploy` environment, never as a repo secret.
-- The image must be public: the games namespace has no GHCR pull secret.
+- The image must be public: session pods use no pull secret.
   - A new GHCR package starts private whatever the repo's visibility; it was made public by hand
     once, in the package settings, before ArgoCD first pinned it.
 - `install-runtime.sh` runs as uid 1000 (the shared home's owner) in busybox; CI tests it with dash.
