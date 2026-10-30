@@ -8,7 +8,7 @@ paths:
 
 - Every runtime built on `main` (runtime.yml `build`) is pushed as
   `ghcr.io/xerktech/xodus-nexus/runtime:<version>` and pinned by digest in xerktech/ArgoCD
-  `streaming/direwolf/app-nexus.yaml` (`deploy-argocd`). Argo then rolls it out; no hand step.
+  `games/direwolf/app-nexus.yaml` (`deploy-argocd`). Argo then rolls it out; no hand step.
   - direwolf runs that image as an initContainer of the `nexus` App (copied to every per-game App);
     `install-runtime.sh` installs it into the shared home and rewrites Nexus's `current.json`.
   - The ArgoCD line must stay one anchored `image: ghcr.io/xerktech/xodus-nexus/runtime...` line;
@@ -17,7 +17,7 @@ paths:
   runtime.yml on `main` forces one.
 - `ARGOCD_PUSH_TOKEN` (a PAT with write access to xerktech/ArgoCD) lives in the main-only
   `argocd-deploy` environment, never as a repo secret.
-- The image must be public: the streaming namespace has no GHCR pull secret.
+- The image must be public: the games namespace has no GHCR pull secret.
   - A new GHCR package starts private whatever the repo's visibility; it was made public by hand
     once, in the package settings, before ArgoCD first pinned it.
 - `install-runtime.sh` runs as uid 1000 (the shared home's owner) in busybox; CI tests it with dash.
