@@ -80,6 +80,11 @@ waiting, and reentrant unregister/close. This is expiry notification only, not
 Microsoft's full account/network/concurrency revocation service. Offline license
 acquisition, other acquisition variants and content mounting are not implemented.
 
+`XStoreAcquireLicenseForDurablesAsync` uses the same signed-proof path for a
+Durable add-on Store ID, without requiring a downloadable package. Its handle is
+an ordinary package-license handle (validity, lost registration and close). It is
+bound to the requesting Store context: a closed context yields no handle.
+
 ### Task-queue ownership
 
 Public queue handles and references held by pending callbacks and dispatchers
@@ -376,8 +381,8 @@ npm run test:runtime-tools
 
 Expected contract checks: queue teardown 20, queue stress 1,302, XAsync
 provider 117, completion lifetime 6,646, scheduling 16, file saves 21,
-WinRT JSON 9, token dispatch/lifetime 88, Store entitlements/licenses 181, installed
-content 274, PlayFab folder/session 153 and initialization 19 (8,846 total),
+WinRT JSON 9, token dispatch/lifetime 124, Store entitlements/licenses 205, installed
+content 274, PlayFab folder/session 153 and initialization 19 (8,906 total),
 plus 64 game-process replacement checks, 40 software-Vulkan compute checks,
 and HTTP/1.1 and HTTP/2 transport, certificate-chain and response-decompression
 checks. The JSON probe exercises real activation, parsing,
