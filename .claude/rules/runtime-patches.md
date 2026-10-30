@@ -21,5 +21,5 @@ paths:
   direct include tests the matcher the runtime ships.
 - Tests: `store-entitlements-probe.c` (package + durable licenses); `token-dispatch-probe.c`
   (`test_endpoint_match`, `test_untyped_endpoint`). They run only in runtime.yml's Wine build.
-- A manual runtime.yml run on a branch builds and probes it (image/deploy stay main-only). Never
-  run the Wine runtime in a container on the TrueNAS host: wineboot can hang and OOM the host.
+- runtime.yml builds only main, even on manual dispatch (`scripts/ci/main-only-builds.test.mjs`).
+  Never run the Wine runtime in a container on the TrueNAS host: wineboot can hang and OOM it.

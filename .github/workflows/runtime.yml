@@ -17,8 +17,7 @@ concurrency:
 
 jobs:
   changes:
-    # A manual run on a branch builds and probes the runtime; only main publishes it.
-    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     outputs:
       needed: ${{ steps.diff.outputs.needed }}
