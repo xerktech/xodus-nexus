@@ -11,6 +11,7 @@
 #include "xasyncprovider.h"
 #include "xuser.h"
 #include "userprovider.h"
+#include "xuser_endpoint_match.h"
 
 struct endpoint {
     HSTRING protocol, host, path, relyingParty, tokenType;
@@ -118,7 +119,31 @@ static void test_signature_strings(IXUserImpl *users, IXThreadingImpl *threads) 
     }
     signature_fixture = FALSE;
 }
-/* A matched endpoint without a token type (the title's catch-all "https://*"
+/* The runtime's own endpoint host matcher. 007 First Light's endpoint list ends
+ * in a catch-all "*" host; before the fix it never matched, so blob storage
+ * requests asked XSTS for a host-scoped token and sign-in failed (400). */
+static void test_endpoint_match(void) {
+    static const struct { const WCHAR *pat, *host; BOOLEAN want; } cases[] = {
+        {L"*", L"iokntprod01storage.blob.core.windows.net", TRUE},
+        {L"*", L"a", TRUE}, {L"*", L"", TRUE}, {L"**", L"ab", TRUE}, {L"a*", L"a", TRUE},
+        {L"*.ioi-cloud.com", L"kconf.ioi-cloud.com", TRUE}, {L"*.ioi.dk", L"kconf.ioi-cloud.com", FALSE},
+        {L"*.xboxlive.com", L"rta.xboxlive.com", TRUE}, {L"*.xboxlive.com", L"RTA.XboxLive.COM", TRUE},
+        {L"*.xboxlive.com", L"xboxlive.com", FALSE}, {L"*.xboxlive.com", L"evilxboxlive.com", FALSE},
+        {L"*.xboxlive.com", L"a.xboxlive.com.evil.com", FALSE},
+        {L"*.xboxlive.com", L"a.xboxlive.com.xboxlive.com", TRUE},
+        {L"a*b*c", L"axxbyyc", TRUE}, {L"a*b*c", L"axxbyycd", FALSE}, {L"a*b*c", L"acb", FALSE},
+        {L"?", L"", FALSE}, {L"?", L"a", TRUE}, {L"", L"", TRUE}, {L"", L"a", FALSE}, {L"ab", L"a", FALSE},
+        {L"*a", L"aaaa", TRUE},
+    };
+    UINT32 i;
+    for (i = 0; i < sizeof(cases) / sizeof(cases[0]); i++)
+    {
+        char name[96];
+        snprintf(name, sizeof(name), "endpoint-match-%u", i);
+        CHECK(name, match_wildcard(cases[i].pat, wcslen(cases[i].pat), cases[i].host, wcslen(cases[i].host)) == cases[i].want);
+    }
+}
+/* A matched endpoint without a token type (the title's catch-all "*" host
  * entry, RelyingParty/TokenType "") must complete without requesting a token. */
 static void test_untyped_endpoint(IXUserImpl *users, IXThreadingImpl *threads) {
     HSTRING saved = token_type;
@@ -222,6 +247,7 @@ int main(void) {
     }
     test_signature_strings(users, threads);
     test_untyped_endpoint(users, threads);
+    test_endpoint_match();
     WindowsDeleteString(relying_party); WindowsDeleteString(token_type);
     IXUserImpl_Release(users); IXThreadingImpl_Release(threads);
     printf("CHECKS %ld FAILURES %ld\n", checks, failures);

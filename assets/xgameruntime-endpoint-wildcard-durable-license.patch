@@ -1,6 +1,6 @@
 --- a/dlls/xgameruntime/xstore.c
 +++ b/dlls/xgameruntime/xstore.c
-@@ -750,14 +750,14 @@ static BOOLEAN WINAPI x_store_XStoreIsAvailabilityPurchasable( IXStoreImpl6 *ifa
+@@ -750,14 +750,14 @@
  
  static HRESULT WINAPI x_store_XStoreAcquireLicenseForDurablesAsync( IXStoreImpl6 *iface, const XStoreContextHandle storeContextHandle, const char *storeId, XAsyncBlock *async )
  {
@@ -21,7 +21,7 @@
  static HRESULT WINAPI x_store_XStoreShowAssociatedProductsUIAsync( IXStoreImpl6 *iface, const XStoreContextHandle storeContextHandle, const char *storeId, XStoreProductKind productKinds, XAsyncBlock *async )
 --- a/dlls/xgameruntime/xstore_package_license.h
 +++ b/dlls/xgameruntime/xstore_package_license.h
-@@ -255,12 +255,16 @@ static BOOLEAN package_license_unregister( XStoreLicenseHandle handle, XTaskQueu
+@@ -255,12 +255,16 @@
  struct package_license_async
  {
      LONG refs, canceled, started;
@@ -38,7 +38,7 @@
  
  static void package_license_async_release( struct package_license_async *context )
  {
-@@ -270,8 +274,10 @@ static void package_license_async_release( struct package_license_async *context
+@@ -270,8 +274,10 @@
      free(context);
  }
  
@@ -51,7 +51,7 @@
  {
      UINT i, j;
      UINT64 until;
-@@ -281,7 +287,7 @@ static HRESULT package_license_from_snapshot( struct entitled_snapshot *snapshot
+@@ -281,7 +287,7 @@
      {
          XStoreProduct *product = &snapshot->products[i];
          if (strcmp(product->storeId, store) || product->productKind != XStoreProductKind_Durable ||
@@ -60,7 +60,7 @@
          for (j = 0; j < product->skusCount; j++)
          {
              XStoreSku *sku = &product->skus[j];
-@@ -293,6 +299,27 @@ static HRESULT package_license_from_snapshot( struct entitled_snapshot *snapshot
+@@ -293,6 +299,27 @@
      return E_ACCESSDENIED;
  }
  
@@ -88,7 +88,7 @@
  static DWORD WINAPI package_license_acquire_worker( void *arg )
  {
      struct package_license_async *context = arg;
-@@ -300,10 +327,13 @@ static DWORD WINAPI package_license_acquire_worker( void *arg )
+@@ -300,10 +327,13 @@
      HRESULT hr = E_ABORT;
      if (!InterlockedCompareExchange(&context->canceled, 0, 0))
          hr = entitled_fetch(context->request, &context->canceled, &snapshot);
@@ -104,7 +104,7 @@
      IXThreadingImpl_XAsyncComplete(context->threading, context->async, hr, SUCCEEDED(hr) ? sizeof(void *) : 0);
      package_license_async_release(context);
      return 0;
-@@ -328,6 +358,7 @@ static HRESULT WINAPI package_license_provider( XAsyncOp op, const XAsyncProvide
+@@ -328,6 +358,7 @@
          return E_PENDING;
      case XAsyncOp_GetResult:
          if (!data->buffer || data->bufferSize < sizeof(void *) || !context->license) return E_INVALIDARG;
@@ -112,7 +112,7 @@
          if (!package_license_valid_object(context->license)) return E_ACCESSDENIED;
          AcquireSRWLockExclusive(&package_license_lock);
          context->license->next = package_licenses; package_licenses = context->license;
-@@ -375,3 +406,40 @@ static HRESULT package_license_result( XAsyncBlock *async, XStoreLicenseHandle *
+@@ -375,3 +406,40 @@
      IXThreadingImpl_Release(threading);
      return hr;
  }
@@ -155,60 +155,101 @@
 +}
 --- a/dlls/xgameruntime/xuser.c
 +++ b/dlls/xgameruntime/xuser.c
-@@ -893,25 +893,30 @@ static HRESULT user_wait_init( XUserHandle user )
+@@ -34,6 +34,7 @@
+ WINE_DEFAULT_DEBUG_CHANNEL(gdkc);
+ 
+ #include "xuser_privilege.h"
++#include "xuser_endpoint_match.h"
+ 
+ static const WCHAR *ACCEPT_JSON[] = { L"application/json", NULL };
+ 
+@@ -893,35 +894,6 @@
      return hr;
  }
  
-+/* Glob match of an endpoint host pattern ('*' any run, '?' any one character)
-+ * with backtracking to the most recent '*'. A trailing '*' must still match
-+ * once the input is exhausted, so a title's catch-all "*" entry matches every
-+ * host as it does on Windows. Hosts compare case-insensitively, like the exact
-+ * entries in user_GetEndpointInfo. */
- static BOOLEAN match_wildcard( const WCHAR *pat, UINT32 patLen, const WCHAR *inp, UINT32 inpLen )
- {
+-static BOOLEAN match_wildcard( const WCHAR *pat, UINT32 patLen, const WCHAR *inp, UINT32 inpLen )
+-{
 -    UINT32 lastMatch = -1, lastWildcard = -1, patOff = 0, inpOff = 0;
-+    UINT32 lastMatch = 0, lastWildcard = ~0u, patOff = 0, inpOff = 0;
- 
-     TRACE( "pat %s, inp %s.\n", debugstr_wn( pat, patLen ), debugstr_wn( inp, inpLen ) );
- 
+-
+-    TRACE( "pat %s, inp %s.\n", debugstr_wn( pat, patLen ), debugstr_wn( inp, inpLen ) );
+-
 -    while (inpOff < inpLen && patOff < patLen)
-+    while (inpOff < inpLen)
-     {
+-    {
 -        if (pat[patOff] == '*')
-+        if (patOff < patLen && pat[patOff] == '*')
-         {
-             lastWildcard = patOff++;
-             lastMatch = inpOff;
-         }
+-        {
+-            lastWildcard = patOff++;
+-            lastMatch = inpOff;
+-        }
 -        else if (pat[patOff] == '?' || pat[patOff] == inp[inpOff])
-+        else if (patOff < patLen && (pat[patOff] == '?' || !wcsnicmp( pat + patOff, inp + inpOff, 1 )))
-         {
-             patOff++;
-             inpOff++;
-         }
+-        {
+-            patOff++;
+-            inpOff++;
+-        }
 -        else if (lastWildcard != -1)
-+        else if (lastWildcard != ~0u)
-         {
-             patOff = lastWildcard + 1;
-             inpOff = ++lastMatch;
-@@ -919,7 +924,8 @@ static BOOLEAN match_wildcard( const WCHAR *pat, UINT32 patLen, const WCHAR *inp
-         else return FALSE;
-     }
- 
+-        {
+-            patOff = lastWildcard + 1;
+-            inpOff = ++lastMatch;
+-        }
+-        else return FALSE;
+-    }
+-
 -    return inpOff == inpLen && patOff == patLen;
-+    while (patOff < patLen && pat[patOff] == '*') patOff++;
-+    return patOff == patLen;
- }
- 
+-}
+-
  static HRESULT WINAPI user_GetEndpointInfo( IUser *iface, const char *url, struct endpoint *info )
-@@ -1814,7 +1820,9 @@ static HRESULT WINAPI token_signature_phase( XAsyncOp op, const XAsyncProviderDa
+ {
+     URL_COMPONENTSW uc = { .dwStructSize = sizeof(URL_COMPONENTSW), .dwSchemeLength = -1, .dwHostNameLength = -1, .dwUrlPathLength = -1 };
+@@ -1814,7 +1786,9 @@
                  }
                  if (FAILED(hr = WindowsCreateStringReference( typeW, ARRAY_SIZE(typeW) - 1, &typeHeader, &info.tokenType ))) goto complete;
              }
 -            if (info.tokenType && FAILED(hr = IUser_GetAuthorization( &context->user->IUser_iface, WindowsGetStringRawBuffer(info.relyingParty, NULL), &auth ))) goto complete;
-+            /* A matched entry without a token type (e.g. the catch-all "https://*" with
++            /* A matched entry without a token type (e.g. the title's catch-all "*" host with
 +             * empty RelyingParty/TokenType) gets no token, as on Windows. */
 +            if (WindowsGetStringLen( info.tokenType ) && FAILED(hr = IUser_GetAuthorization( &context->user->IUser_iface, WindowsGetStringRawBuffer(info.relyingParty, NULL), &auth ))) goto complete;
  
              if (context->isUtf16)
              {
+--- /dev/null
++++ b/dlls/xgameruntime/xuser_endpoint_match.h
+@@ -0,0 +1,40 @@
++/* SPDX-License-Identifier: LGPL-2.1-or-later
++ * Endpoint host matching, kept free of other xgameruntime state so the
++ * token-dispatch probe can test the code the runtime ships. */
++#ifndef XUSER_ENDPOINT_MATCH_H
++#define XUSER_ENDPOINT_MATCH_H
++
++/* Glob match of an endpoint host pattern ('*' any run, '?' any one character)
++ * with backtracking to the most recent '*'. A trailing '*' must still match
++ * once the input is exhausted, so a title's catch-all "*" entry matches every
++ * host as it does on Windows. Hosts compare case-insensitively, like the exact
++ * entries in user_GetEndpointInfo. */
++static BOOLEAN match_wildcard( const WCHAR *pat, UINT32 patLen, const WCHAR *inp, UINT32 inpLen )
++{
++    UINT32 lastMatch = 0, lastWildcard = ~0u, patOff = 0, inpOff = 0;
++
++    while (inpOff < inpLen)
++    {
++        if (patOff < patLen && pat[patOff] == '*')
++        {
++            lastWildcard = patOff++;
++            lastMatch = inpOff;
++        }
++        else if (patOff < patLen && (pat[patOff] == '?' || !wcsnicmp( pat + patOff, inp + inpOff, 1 )))
++        {
++            patOff++;
++            inpOff++;
++        }
++        else if (lastWildcard != ~0u)
++        {
++            patOff = lastWildcard + 1;
++            inpOff = ++lastMatch;
++        }
++        else return FALSE;
++    }
++
++    while (patOff < patLen && pat[patOff] == '*') patOff++;
++    return patOff == patLen;
++}
++
++#endif

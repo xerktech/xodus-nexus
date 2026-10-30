@@ -14,8 +14,12 @@ paths:
   - Patch paths are `a/dlls/...`/`b/dlls/...` relative to the Wine tree, no `diff --git`/`index`.
   - Update `expectedXgameruntimeSources` for every file the patch touches; the build rejects a
     tree whose patched sources don't hash to it.
-- XUser endpoint table: `match_wildcard` must accept a pattern ending in `*` (title catch-all
-  `https://*`). A miss falls back to an XSTS token for `https://<host>`, which XSTS rejects (400),
-  failing sign-in; a matched entry with empty TokenType must request no token.
-- Tests: `store-entitlements-probe.c` (package + durable licenses), `token-dispatch-probe.c`
-  (`test_untyped_endpoint`); they run only in runtime.yml's built runtime under Wine.
+- XUser endpoint table: `match_wildcard` (`xuser_endpoint_match.h`) must accept a pattern ending
+  in `*` (a title's catch-all `*` host). A miss falls back to an XSTS token for `https://<host>`,
+  which XSTS rejects (400), failing sign-in; a matched entry with empty TokenType requests no token.
+- Keep `match_wildcard` in its header: the token-dispatch probe stubs `GetEndpointInfo`, so only a
+  direct include tests the matcher the runtime ships.
+- Tests: `store-entitlements-probe.c` (package + durable licenses); `token-dispatch-probe.c`
+  (`test_endpoint_match`, `test_untyped_endpoint`). They run only in runtime.yml's Wine build.
+- A manual runtime.yml run on a branch builds and probes it (image/deploy stay main-only). Never
+  run the Wine runtime in a container on the TrueNAS host: wineboot can hang and OOM the host.
