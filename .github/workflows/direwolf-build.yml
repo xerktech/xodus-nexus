@@ -1,0 +1,39 @@
+name: direwolf launcher build
+
+# Builds the x64 AppImage xerktech's direwolf deploys from this branch: upstream
+# v0.4.1 plus the #457 shortcut-quit fix, until upstream releases one (XERK-2448).
+# Lives beside ci.yml rather than in it: upstream's CI tests keep ci.yml packaging main only.
+on:
+  push:
+    branches: [XERK-2448]
+
+permissions:
+  contents: read
+
+jobs:
+  appimage:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Install account-free runtime fixture toolchain
+        timeout-minutes: 15
+        run: |
+          sudo "$(command -v node)" scripts/ci/ubuntu-mirror.mjs
+          sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update
+          sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y gcc-mingw-w64-x86-64
+      - run: npm run build
+      - run: npx --no-install electron-builder --linux AppImage --x64 --publish never
+      - run: cd release && sha512sum ./*.AppImage | tee "$(ls ./*.AppImage).sha512sum"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: direwolf-launcher
+          path: |
+            release/*.AppImage
+            release/*.AppImage.sha512sum
+          if-no-files-found: error
+          retention-days: 14
