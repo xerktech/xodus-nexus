@@ -369,8 +369,9 @@ static void test_package_licenses(void)
 {
     IXThreadingImpl *threads = NULL;
     XTaskQueueHandle queue = NULL, immediate = NULL;
-    struct package_license *license = NULL;
+    struct package_license *license = NULL, *durable = NULL;
     XStoreProduct product = {0}; XStoreSku sku = {0};
+    UINT64 xuid;
     struct entitled_snapshot proof = {0};
     struct license_callback_context context = {0};
     XStoreContextHandle store;
@@ -393,6 +394,12 @@ static void test_package_licenses(void)
     CHECK("license-unowned-no-grant", package_license_from_snapshot(&proof, product.storeId, threads, &license) == E_ACCESSDENIED && !license);
     product.isInUserCollection = TRUE; product.hasDigitalDownload = FALSE;
     CHECK("license-no-package-no-grant", package_license_from_snapshot(&proof, product.storeId, threads, &license) == E_ACCESSDENIED);
+    /* Durable add-on licenses need ownership, not an installable package. */
+    CHECK("durable-no-package-grant", durable_license_from_snapshot(&proof, product.storeId, threads, &durable) == S_OK && durable);
+    if (durable) { package_license_dispose(durable); durable = NULL; }
+    product.isInUserCollection = FALSE;
+    CHECK("durable-unowned-no-grant", durable_license_from_snapshot(&proof, product.storeId, threads, &durable) == E_ACCESSDENIED && !durable);
+    product.isInUserCollection = TRUE;
     product.hasDigitalDownload = TRUE; product.productKind = XStoreProductKind_Game;
     CHECK("license-base-not-durable", package_license_from_snapshot(&proof, product.storeId, threads, &license) == E_ACCESSDENIED);
     product.productKind = XStoreProductKind_Durable; sku.isTrial = TRUE;
@@ -415,6 +422,30 @@ static void test_package_licenses(void)
         data.buffer = &result; data.bufferSize = sizeof(result);
         CHECK("license-provider-result-transfer", package_license_provider(XAsyncOp_GetResult, &data) == S_OK && result == license && !acquired.license);
         CHECK("license-provider-result-once", package_license_provider(XAsyncOp_GetResult, &data) == E_INVALIDARG);
+    }
+    CHECK("durable-fixture", package_license_create(threads, time(NULL) + 60, &durable) == S_OK && durable);
+    if (durable)
+    {
+        struct package_license_async acquired = {0};
+        XAsyncProviderData data = {0};
+        acquired.license = durable; acquired.durable = TRUE; acquired.store_context = (void *)1;
+        data.context = &acquired; data.buffer = &result; data.bufferSize = sizeof(result);
+        CHECK("durable-closed-store-no-handle", package_license_provider(XAsyncOp_GetResult, &data) == E_INVALIDARG && acquired.license == durable);
+        CHECK("durable-store", entitled_store_create(NULL, &store) == S_OK &&
+            entitled_store_identity(store, &xuid, &acquired.store_serial) == S_OK);
+        acquired.store_context = store;
+        CHECK("durable-provider-result-transfer", package_license_provider(XAsyncOp_GetResult, &data) == S_OK && result == durable && !acquired.license);
+        entitled_store_close(store);
+        /* Same handle type as package licenses: validity, loss and close apply. */
+        CHECK("durable-valid", package_license_valid(durable));
+        context.handle = durable; lost_callbacks = 0;
+        CHECK("durable-register", package_license_register(durable, queue, &context, license_lost, &context.token) == S_OK && context.token.token);
+        InterlockedExchange(&durable->lost, TRUE); package_license_notify(durable);
+        CHECK("durable-lost-event", IXThreadingImpl_XTaskQueueDispatch(threads, queue, XTaskQueuePort_Completion, 0) && lost_callbacks == 1 && !package_license_valid(durable));
+        CHECK("durable-unregister", package_license_unregister(durable, context.token, TRUE));
+        package_license_close(durable);
+        CHECK("durable-close-invalid", !package_license_valid(durable));
+        durable = NULL; memset(&context, 0, sizeof(context));
     }
     CHECK("license-valid", package_license_valid(license));
     CHECK("license-foreign-invalid", !package_license_valid((void *)1));
@@ -508,6 +539,26 @@ static void test_package_licenses(void)
         start = GetTickCount64(); while (bridge_active && GetTickCount64() - start < 2000) Sleep(1);
         CHECK("license-failed-worker-finishes", !bridge_active);
     }
+    CHECK("durable-foreign-store", durable_license_begin((void *)1, "B00000000002", &block) == E_INVALIDARG);
+    ResetEvent(bridge_started); ResetEvent(bridge_gate); callbacks = 0;
+    memset(&block, 0, sizeof(block)); block.queue = queue; block.callback = complete;
+    CHECK("durable-context", entitled_store_create(NULL, &store) == S_OK);
+    CHECK("durable-invalid-id", durable_license_begin(store, "unknown", &block) == E_INVALIDARG);
+    CHECK("durable-null-id", durable_license_begin(store, NULL, &block) == E_INVALIDARG);
+    CHECK("durable-null-async", durable_license_begin(store, "B00000000002", NULL) == E_INVALIDARG);
+    CHECK("durable-acquire-begin", durable_license_begin(store, "B00000000002", &block) == S_OK);
+    start = GetTickCount64();
+    CHECK("durable-dispatch-work", IXThreadingImpl_XTaskQueueDispatch(threads, queue, XTaskQueuePort_Work, 0));
+    CHECK("durable-nonblocking-work", GetTickCount64() - start < 200);
+    CHECK("durable-worker-started", WaitForSingleObject(bridge_started, 2000) == WAIT_OBJECT_0);
+    SetEvent(bridge_gate); dispatch_until_complete(threads, queue, &block);
+    CHECK("durable-failure-preserved", IXThreadingImpl_XAsyncGetStatus(threads, &block, FALSE) == E_FAIL);
+    CHECK("durable-completion-once", callbacks == 1);
+    result = (void *)1;
+    CHECK("durable-no-handle-on-failure", FAILED(durable_license_result(&block, &result)) && !result);
+    entitled_store_close(store);
+    start = GetTickCount64(); while (bridge_active && GetTickCount64() - start < 2000) Sleep(1);
+    CHECK("durable-failed-worker-finishes", !bridge_active);
 done:
     if (immediate) IXThreadingImpl_XTaskQueueCloseHandle(threads, immediate);
     if (queue) IXThreadingImpl_XTaskQueueCloseHandle(threads, queue);

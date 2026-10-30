@@ -21,6 +21,16 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+      - name: Keep Claude instruction files under 40,000 characters
+        env:
+          LC_ALL: C.UTF-8
+        run: |
+          fail=0
+          while IFS= read -r file; do
+            chars=$(wc -m < "$file")
+            if [ "$chars" -ge 40000 ]; then echo "::error file=$file::$chars characters (limit 40,000)"; fail=1; fi
+          done < <(git ls-files 'CLAUDE.md' '*/CLAUDE.md' 'CLAUDE.local.md' '.claude/rules/*.md')
+          exit "$fail"
       - uses: actions/setup-node@v4
         with:
           node-version: '22'

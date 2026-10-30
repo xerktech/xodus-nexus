@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fix 007 First Light sign-in failing on storage requests and reporting add-on content as not owned: catch-all `*` Xbox endpoints now match (with no token), and durable add-on licenses can be acquired.
 - Remove temporary launch views left on the games volume by sessions that ended without a clean exit, keeping any view a running session still uses.
 - Wait for in-flight Xbox async operations when a game shuts down a task queue, so their completion callbacks still run instead of being dropped.
 - Run Xbox async completion callbacks canceled by task-queue shutdown, so games can release per-call data instead of leaking it or waiting forever.
