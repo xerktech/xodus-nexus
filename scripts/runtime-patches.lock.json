@@ -218,7 +218,7 @@
     },
     {
       "file": "assets/xgameruntime-endpoint-wildcard-durable-license.patch",
-      "sha256": "48b3be1fc651810d4a03f311e9505cd1b8e1b6c4e7894639d8b00e32d949477f"
+      "sha256": "82d486089e7af01d06e29d6ca92343c9871afaa02c04a0e854a9618b2b153aea"
     }
   ],
   "expectedWineSources": {
@@ -253,7 +253,7 @@
     "dlls/xgameruntime/xsystem.c": "a3c151c5d05875b68f49c534aae9d40e3f15ec800af0f85e159ede7c95401880",
     "dlls/xgameruntime/xsystemanalytics.c": "189e99c83273b429325ecefa2b9246c45863c22f0c4006a791ec57b8f7b9d384",
     "dlls/xgameruntime/xthreading.c": "8dcd4494140de334c71b61c57ddd2104e0c52e69de43d0a63c7de33345918804",
-    "dlls/xgameruntime/xuser.c": "b61bf1198e3afa18f5c7c2cd4be73ff5a859eb4313b865fdea7ac49036e07ca9",
+    "dlls/xgameruntime/xuser.c": "d82097f63cd53dcb89aa917a3ef85914373c04e5545ad2c4695cae3a88bae84d",
     "dlls/xgameruntime/xuser_audio.h": "66ede45d4fc798612c8dc939b8903bccb0a023228a6618636fd6ed76ca8ed8a7",
     "dlls/xgameruntime/xuser_device_events.h": "ed3b6ac25510b7bff288e36859781811e7de3985d418159ce25a2b00bc6d35cb",
     "dlls/xgameruntime/xuser_endpoint_match.h": "bc96c17392576aa3d588bb335981185a11c5652debc8a901a0850494e6c07f87",

@@ -177,11 +177,14 @@ static void test_untyped_endpoint(IXUserImpl *users, IXThreadingImpl *threads) {
             if (utf16) {
                 XUserGetTokenAndSignatureUtf16Data *result = NULL;
                 hr = IXUserImpl_XUserGetTokenAndSignatureUtf16Result(users, &block, size, buffer, &result, &used);
-                CHECK("untyped-wide-no-token", hr == S_OK && result && !result->tokenCount && !result->token);
+                /* Present and empty, never NULL: 007 First Light crashes on a NULL token. */
+                CHECK("untyped-wide-empty-token", hr == S_OK && result && result->tokenCount == 1 && result->token && !result->token[0]);
+                CHECK("untyped-wide-empty-signature", hr == S_OK && result && result->signatureCount == 1 && result->signature && !result->signature[0]);
             } else {
                 XUserGetTokenAndSignatureData *result = NULL;
                 hr = IXUserImpl_XUserGetTokenAndSignatureResult(users, &block, size, buffer, &result, &used);
-                CHECK("untyped-utf8-no-token", hr == S_OK && result && !result->tokenSize && !result->token);
+                CHECK("untyped-utf8-empty-token", hr == S_OK && result && result->tokenSize == 1 && result->token && !result->token[0]);
+                CHECK("untyped-utf8-empty-signature", hr == S_OK && result && result->signatureSize == 1 && result->signature && !result->signature[0]);
             }
             free(buffer);
         }
