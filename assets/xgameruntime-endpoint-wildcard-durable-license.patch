@@ -199,14 +199,21 @@
  static HRESULT WINAPI user_GetEndpointInfo( IUser *iface, const char *url, struct endpoint *info )
  {
      URL_COMPONENTSW uc = { .dwStructSize = sizeof(URL_COMPONENTSW), .dwSchemeLength = -1, .dwHostNameLength = -1, .dwUrlPathLength = -1 };
-@@ -1814,7 +1786,9 @@
+@@ -1814,7 +1786,16 @@
                  }
                  if (FAILED(hr = WindowsCreateStringReference( typeW, ARRAY_SIZE(typeW) - 1, &typeHeader, &info.tokenType ))) goto complete;
              }
 -            if (info.tokenType && FAILED(hr = IUser_GetAuthorization( &context->user->IUser_iface, WindowsGetStringRawBuffer(info.relyingParty, NULL), &auth ))) goto complete;
 +            /* A matched entry without a token type (e.g. the title's catch-all "*" host with
-+             * empty RelyingParty/TokenType) gets no token, as on Windows. */
-+            if (WindowsGetStringLen( info.tokenType ) && FAILED(hr = IUser_GetAuthorization( &context->user->IUser_iface, WindowsGetStringRawBuffer(info.relyingParty, NULL), &auth ))) goto complete;
++             * empty RelyingParty/TokenType) needs no token. Report it with the GDK's
++             * E_GAMEUSER_NO_TOKEN_REQUIRED, which XSAPI treats as "send no auth headers";
++             * a success result with a NULL token crashes 007 First Light. */
++            if (!WindowsGetStringLen( info.tokenType ))
++            {
++                hr = E_GAMEUSER_NO_TOKEN_REQUIRED;
++                goto complete;
++            }
++            if (FAILED(hr = IUser_GetAuthorization( &context->user->IUser_iface, WindowsGetStringRawBuffer(info.relyingParty, NULL), &auth ))) goto complete;
  
              if (context->isUtf16)
              {
