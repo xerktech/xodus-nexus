@@ -13,6 +13,10 @@
 #include "userprovider.h"
 #include "xuser_endpoint_match.h"
 
+#ifndef E_GAMEUSER_NO_TOKEN_REQUIRED
+#define E_GAMEUSER_NO_TOKEN_REQUIRED ((HRESULT)0x89245105L)
+#endif
+
 struct endpoint {
     HSTRING protocol, host, path, relyingParty, tokenType;
     void *policy;
@@ -168,23 +172,23 @@ static void test_untyped_endpoint(IXUserImpl *users, IXThreadingImpl *threads) {
         while ((!callbacks || user.refs != 1) && GetTickCount64() - start < 3000) {
             IXThreadingImpl_XTaskQueueDispatch(threads, queue, XTaskQueuePort_Completion, 0); Sleep(1);
         }
-        CHECK("untyped-status", IXThreadingImpl_XAsyncGetStatus(threads, &block, FALSE) == S_OK);
+        /* No token type means no token: the call fails with E_GAMEUSER_NO_TOKEN_REQUIRED
+         * (XSAPI sends the request without auth headers); a NULL token reported as
+         * success crashes 007 First Light. */
+        CHECK("untyped-status", IXThreadingImpl_XAsyncGetStatus(threads, &block, FALSE) == E_GAMEUSER_NO_TOKEN_REQUIRED);
         CHECK("untyped-no-authorization", authorize_calls == 0);
         hr = utf16 ? IXUserImpl_XUserGetTokenAndSignatureUtf16ResultSize(users, &block, &size) :
             IXUserImpl_XUserGetTokenAndSignatureResultSize(users, &block, &size);
-        CHECK("untyped-result-size", hr == S_OK && size >= 32);
-        if (hr == S_OK && size >= 32 && (buffer = malloc(size))) {
+        CHECK("untyped-result-size", hr == E_GAMEUSER_NO_TOKEN_REQUIRED);
+        if ((buffer = malloc(64))) {
             if (utf16) {
                 XUserGetTokenAndSignatureUtf16Data *result = NULL;
-                hr = IXUserImpl_XUserGetTokenAndSignatureUtf16Result(users, &block, size, buffer, &result, &used);
-                /* Present and empty, never NULL: 007 First Light crashes on a NULL token. */
-                CHECK("untyped-wide-empty-token", hr == S_OK && result && result->tokenCount == 1 && result->token && !result->token[0]);
-                CHECK("untyped-wide-empty-signature", hr == S_OK && result && result->signatureCount == 1 && result->signature && !result->signature[0]);
+                hr = IXUserImpl_XUserGetTokenAndSignatureUtf16Result(users, &block, 64, buffer, &result, &used);
+                CHECK("untyped-wide-no-token", hr == E_GAMEUSER_NO_TOKEN_REQUIRED && !result);
             } else {
                 XUserGetTokenAndSignatureData *result = NULL;
-                hr = IXUserImpl_XUserGetTokenAndSignatureResult(users, &block, size, buffer, &result, &used);
-                CHECK("untyped-utf8-empty-token", hr == S_OK && result && result->tokenSize == 1 && result->token && !result->token[0]);
-                CHECK("untyped-utf8-empty-signature", hr == S_OK && result && result->signatureSize == 1 && result->signature && !result->signature[0]);
+                hr = IXUserImpl_XUserGetTokenAndSignatureResult(users, &block, 64, buffer, &result, &used);
+                CHECK("untyped-utf8-no-token", hr == E_GAMEUSER_NO_TOKEN_REQUIRED && !result);
             }
             free(buffer);
         }

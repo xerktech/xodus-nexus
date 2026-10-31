@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Fix 007 First Light crashing at the title screen (exit code 5) when it requests a token for its cloud storage: an endpoint that takes no Xbox token now gets an empty token instead of none.
+- Fix 007 First Light crashing at the title screen (exit code 5) when it requests a token for its cloud storage: an Xbox endpoint that takes no token now reports "no token required", as on Windows, instead of a successful result with no token.
 - Fix 007 First Light sign-in failing on storage requests and reporting add-on content as not owned: catch-all `*` Xbox endpoints now match (with no token), and durable add-on licenses can be acquired.
 - Remove temporary launch views left on the games volume by sessions that ended without a clean exit, keeping any view a running session still uses.
 - Wait for in-flight Xbox async operations when a game shuts down a task queue, so their completion callbacks still run instead of being dropped.
